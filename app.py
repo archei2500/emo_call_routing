@@ -1,6 +1,7 @@
 import gradio as gr
 import os
 import pandas as pd
+import call
 # import iso639
 # import torch
 # import importlib
@@ -46,10 +47,16 @@ initial_df = pd.DataFrame({
 })
 
 
+def play_welcome():
+    return call.welcome_audio_path
+
+
 with gr.Blocks() as demo:
     with gr.Tab("Симуляция звонка"):
         gr.Markdown("### <center>Нажмите на кнопку ниже, чтобы начать звонок")
         call_btn = gr.Button("Позвонить")
+        hidden_recorder = gr.Audio(sources=["microphone"], streaming=True, type="numpy", visible=False, interactive=True, elem_id="recorder")
+        hidden_player = gr.Audio(format="mp3", visible=False, autoplay=False, interactive=False, elem_id="player")
         routing_result = gr.Textbox(label="Подобранный специалист", visible=False)
     with gr.Tab("Панель специалиста"):
         gr.Markdown("### <center>Описание проблемы клиента:")
@@ -60,6 +67,28 @@ with gr.Blocks() as demo:
             interactive=True,       # разрешает редактирование
             label="Список сотрудников")
         admin_button = gr.Button("Сохранить изменения")
+
+    # Состояние для накопления (опционально)
+    # state = gr.State("")
+
+    call_btn.click(
+        fn=play_welcome,
+        outputs=hidden_player
+    ).then(
+        js=f"""
+            () => {{
+                const player = document.querySelector('#player audio');
+                if (!player) return;
+    
+                player.play().catch(e => console.log("play error:", e));
+    
+                setTimeout(() => {{
+                    const btn = document.querySelector('#recorder button');
+                    if (btn) btn.click();
+                }}, {call.delay_ms});
+            }}
+            """
+    )
 
 
 demo.launch(share=True, max_file_size=None)
