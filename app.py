@@ -7,38 +7,7 @@ import call
 # import importlib
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-user'
 os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
-# import torchvision.transforms.functional as F
-# sys.modules['torchvision.transforms.functional_tensor'] = F
-# if 'basicsr.data.degradations' in sys.modules:
-#     importlib.reload(sys.modules['basicsr.data.degradations'])
 
-# path_to_video = 'vid.mp4'
-# asr_model_downloaded = False
-
-
-# def toggle_vid_upload_fields(upload_method):
-#     return [
-#         gr.File(visible=upload_method == "From the device"),
-#         gr.Textbox(visible=upload_method == "Link from YouTube"),
-#     ]
-#
-#
-# def update_uploads(cg_1, cg_2):
-#     return [gr.Markdown(visible=False), gr.File(visible="Subtitles" in cg_1, interactive="Subtitles" in cg_1),
-#             gr.File(visible="Clone sample (audio prompt)" in cg_1, interactive="Clone sample (audio prompt)" in cg_1),
-#             gr.File(visible="Prompt transcription" in cg_1, interactive="Prompt transcription" in cg_1),
-#             gr.File(visible="Synthesized speech fragments (zip)" in cg_2,
-#                     interactive="Synthesized speech fragments (zip)" in cg_2),
-#             gr.File(visible="Video fragments (zip)" in cg_2, interactive="Video fragments (zip)" in cg_2),
-#             gr.Checkbox(visible="Clone sample (audio prompt)" not in cg_1,
-#                         interactive="Clone sample (audio prompt)" not in cg_1,
-#                         value=False),
-#             gr.Checkbox(visible="Prompt transcription" not in cg_1, interactive="Prompt transcription" not in cg_1, value=False),
-#             gr.Checkbox(visible="Clone sample (audio prompt)" in cg_1,
-#                         interactive="Clone sample (audio prompt)" in cg_1,
-#                         value=False)
-#             #gr.Dropdown(visible="Clone sample (audio prompt)" in cg_1, interactive="Clone sample (audio prompt)" in cg_1)
-#             ]
 
 initial_df = pd.DataFrame({
     "Имя": ["Анна", "Борис", "Кирилл"],
@@ -47,15 +16,12 @@ initial_df = pd.DataFrame({
 })
 
 
-def play_welcome():
-    return call.welcome_audio_path
-
-
 with gr.Blocks() as demo:
     with gr.Tab("Симуляция звонка"):
         gr.Markdown("### <center>Нажмите на кнопку ниже, чтобы начать звонок")
         call_btn = gr.Button("Позвонить")
         hidden_recorder = gr.Audio(sources=["microphone"], streaming=True, type="numpy", visible=False, interactive=True, elem_id="recorder")
+        audio_state = gr.State(value={"full_buffer": [], "partial_buffer": []})  # cостояние для накопления чанков
         hidden_player = gr.Audio(format="mp3", visible=False, autoplay=False, interactive=False, elem_id="player")
         routing_result = gr.Textbox(label="Подобранный специалист", visible=False)
     with gr.Tab("Панель специалиста"):
@@ -68,11 +34,9 @@ with gr.Blocks() as demo:
             label="Список сотрудников")
         admin_button = gr.Button("Сохранить изменения")
 
-    # Состояние для накопления (опционально)
-    # state = gr.State("")
-
+    # при нажатии на кнопку звонка
     call_btn.click(
-        fn=play_welcome,
+        fn=lambda: call.welcome_audio_path,
         outputs=hidden_player
     ).then(
         js=f"""
@@ -88,6 +52,49 @@ with gr.Blocks() as demo:
                 }}, {call.delay_ms});
             }}
             """
+    ).then(
+        js="""
+        () => {
+            const recorder = document.querySelector('#recorder');
+            if (!recorder) return;
+
+            // сомнительно
+            const stopBtn = recorder.querySelectorAll('button')[1];  // или 'button[aria-label="Stop Recording"]'
+            const stopBtn = buttons.length >= 2 ? buttons[1] : null;
+            if (stopBtn && stopBtn.innerHTML.includes('square') || stopBtn.textContent.trim() === '') {
+                stopBtn.click();
+            }
+
+            setTimeout(() => {
+                if (stopBtn) {
+                    stopBtn.click();
+                    console.log("Авто-остановка записи через 120 секунд");
+                }
+            }, 120000);
+        }
+        """
+    )
+
+    # стриминг с микрофона
+    hidden_recorder.stream(
+        fn=call.process_partial_chunk,
+        inputs=[hidden_recorder, audio_state],
+        outputs=audio_state,
+        time_limit=150,
+        stream_every=0.5
+    )
+
+    # при остановке записи
+    hidden_recorder.stop_recording(
+        fn=lambda: call.final_audio_path,
+        outputs=hidden_player
+    ).then(
+        fn=call.process_full_audio,
+        inputs=audio_state,
+        outputs=[routing_result]
+    ).then(
+        fn=lambda: {"full_buffer": [], "partial_buffer": []},  # очистка
+        outputs=audio_state
     )
 
 
