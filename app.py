@@ -1,3 +1,5 @@
+import threading
+
 import gradio as gr
 import os
 import pandas as pd
@@ -31,7 +33,22 @@ with gr.Blocks() as demo:
         recorder_text = gr.Markdown("Нажмите на кнопку записи, чтобы описать проблему устно.", visible=False)
         recorder = gr.Audio(sources=["microphone"], streaming=True, type="numpy", visible=False, interactive=True, elem_id="recorder")
         recorder_final_text = gr.Markdown("Затем завершите запись, когда будете готовы.", visible=False)
-        audio_state = gr.State(value={"full_buffer": [], "partial_buffer": []})  # cостояние для накопления чанков
+        confirm_age_btn = gr.Button("Мне есть 18", visible=False)  # для подтверждения возраста (если распознает ребёнка)
+        audio_state = gr.State(value={"full_buffer": [], "ag_buffer": [], "emo_vad_buffer": []})  # cостояние для накопления чанков
+        # состояние для фоновой обработки моделями
+        stream_state = gr.State(
+            value={
+                "ag_predictor_loaded": False,
+                "emo_vad_predictor_loaded": False,
+                "age_gender_processing": False,
+                "emotion_vad_processing": False,
+                "ag_result": None,
+                "age_trigger": False,
+                "age_confirmed": False,
+                "emo_vad_result": None,
+                "state_lock": threading.Lock()
+            }
+        )
         player_start_text = gr.Markdown("Нажмите на кнопку воспроизведения, чтобы прослушать приветствие.", visible=False)
         player_end_text = gr.Markdown("Нажмите на кнопку воспроизведения, чтобы прослушать финальное сообщение.", visible=False)
         player1 = gr.Audio(format="mp3", visible=False, autoplay=False, interactive=True, elem_id="player")
@@ -73,8 +90,8 @@ with gr.Blocks() as demo:
     # стриминг с микрофона
     recorder.stream(
         fn=call.process_partial_chunk,
-        inputs=[recorder, audio_state],
-        outputs=audio_state,
+        inputs=[recorder, audio_state, stream_state],
+        outputs=[audio_state, stream_state],
         time_limit=30,
         stream_every=0.5
     )
@@ -91,7 +108,7 @@ with gr.Blocks() as demo:
         outputs=[player_end_text, player2]
     ).then(
         fn=call.process_full_audio,
-        inputs=audio_state,
+        inputs=[audio_state, stream_state],
         outputs=[routing_result, audio_state]
     )
 
