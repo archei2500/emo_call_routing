@@ -1,9 +1,11 @@
+import threading
+
 import numpy as np
 import os
 import soundfile as sf
 import time
 from models.age_gender_predictor import get_age_gender_predictor
-from models.emotion_vad_predictor import get_emotion_predictor
+from models.emotion_vad_predictor import get_emotion_vad_predictor
 import librosa
 
 welcome_audio_path = "welcome.mp3"
@@ -11,6 +13,65 @@ welcome_audio_path = "welcome.mp3"
 # delay_ms = int((welcome_duration + 0.5) * 1000)
 final_audio_path = "final.mp3"
 SAMPLERATE = 16000
+
+
+def background_age_gender(audio_snapshot, stream_state):
+    '''
+    В фоне запускает обработку аудиофрагмента моделью, которая определяет возраст и пол человека по голосу.
+    Итоговый результат будет сохранён в stream_state.
+    '''
+    model = get_age_gender_predictor()
+    new_result = model.predict(audio_snapshot, SAMPLERATE)
+    with stream_state["lock"]:
+        prev_result = stream_state.get("ag_result")
+
+        if prev_result is None:
+            # первый запуск: просто присваиваем
+            stream_state["ag_result"] = new_result
+        else:
+            avg_raw_score = (prev_result["age"]["raw_score"] + new_result["age"]["raw_score"]) / 2
+            aggregated_age_years = round(100 * avg_raw_score)
+
+            # агрегация вероятностей: берём максимумы для уверенности
+            max_child_prob = max(
+                prev_result["age_category"]["child_probability"],
+                new_result["age_category"]["child_probability"]
+            )
+            max_female_prob = max(
+                prev_result["gender"]["probabilities"]["female"],
+                new_result["gender"]["probabilities"]["female"]
+            )
+            max_male_prob = max(
+                prev_result["gender"]["probabilities"]["male"],
+                new_result["gender"]["probabilities"]["male"]
+            )
+
+            # пересчёт на основе агрегированных вероятностей
+            aggregated_result = {"age": {
+                "years": aggregated_age_years,  # средний возраст
+                "raw_score": avg_raw_score
+            }, "gender": {
+                "probabilities": {
+                    "female": max_female_prob,
+                    "male": max_male_prob
+                },
+                "predicted": "female" if max_female_prob > max_male_prob else "male"
+            }, "age_category": {
+                "is_child": max_child_prob > 0.5 or aggregated_age_years < 18,
+                "child_probability": max_child_prob,
+                "is_adult": max_child_prob <= 0.5 and aggregated_age_years >= 18,
+                "adult_probability": 1 - max_child_prob
+            }}
+
+            stream_state["ag_result"] = aggregated_result
+
+        # установка триггера
+        final_result = stream_state["ag_result"]
+        if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
+            stream_state["age_trigger"] = True
+
+        # модель свободна
+        stream_state["age_gender_processing"] = False
 
 
 def analyze_audio_chunk(audio_array, sample_rate, age_gender_predictor, emotion_predictor):
@@ -46,20 +107,6 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     if audio_data is None:
         return audio_state, stream_state
 
-    # Инициализируем модели один раз при первом вызове
-    # if "models_initialized" not in state:
-    #     print("Инициализация моделей...")
-    #     state["age_gender_predictor"] = get_age_gender_predictor(
-    #         model_path="./model_paths/age_gender_model",
-    #         device="cpu"
-    #     )
-    #     state["emotion_predictor"] = get_emotion_predictor(
-    #         model_path="./model_paths/emotion_vad_predictor",
-    #         device="cpu"
-    #     )
-    #     state["models_initialized"] = True
-    #     print("Модели инициализированы.")
-
     # Обрабатываем разные форматы входных данных
     audio_array = None
     sample_rate = SAMPLERATE  # значение по умолчанию
@@ -94,25 +141,42 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
 
     # Добавляем в буферы
     audio_state["full_buffer"].append(audio_array)
-    audio_state["ag_buffer"].append(audio_array)
     audio_state["emo_vad_buffer"].append(audio_array)
 
-    # Проверяем длину частичного буфера (3 секунды)
-    # if state["partial_buffer"]:
-    #     total_samples = sum(len(chunk) for chunk in state["partial_buffer"])
-    #     total_seconds = total_samples / sample_rate
-    #
-    #     if total_seconds >= 3.0:
-    #         partial_audio = np.concatenate(state["partial_buffer"])
-    #
-    #         # Очищаем частичный буфер
-    #         state["partial_buffer"] = []
+    # ещё надо ж проверку на тишину
 
-    if not stream_state["age_gender_processing"]:
-        if stream_state["ag_result"]: # надо ли запускать во второй раз, решаем
-            pass
-        else:
-            pass
+    should_run = False  # флаг для запуска фоновой обработки
+
+    with stream_state["lock"]:
+        if stream_state["retry_count"] < 2:
+            audio_state["ag_buffer"].append(audio_array)
+            total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
+            total_seconds = total_samples / sample_rate
+
+            if not stream_state["age_gender_processing"] and total_seconds >= 3.0:
+                # первый раз
+                if not stream_state["ag_result"]:
+                    should_run = True
+                # низкая уверенность модели
+                if (stream_state["ag_result"] and
+                        stream_state["ag_result"]["age_category"]["child_probability"] < 0.75 and
+                        stream_state["ag_result"]["gender"]["probabilities"]["female"] < 0.75 and
+                        stream_state["ag_result"]["gender"]["probabilities"]["male"] < 0.75):
+                    should_run = True
+                    stream_state["retry_count"] += 1
+
+                if should_run:
+                    partial_audio = np.concatenate(audio_state["ag_buffer"])
+                    audio_snapshot = partial_audio.copy()
+                    audio_state["ag_buffer"] = []
+                    stream_state["age_gender_processing"] = True
+
+    if should_run:
+        threading.Thread(
+            target=background_age_gender,
+            args=(audio_snapshot, stream_state),
+            daemon=True
+        ).start()
 
     return audio_state, stream_state
 
@@ -213,122 +277,6 @@ def process_full_audio(state):
         return state, f"⚠️ Ошибка обработки: {str(e)}"
 
 
-# def process_partial_chunk(audio_chunk, state):
-#     if audio_chunk is None:
-#         # Конец стриминга — но здесь не финализируем, оставляем для .stop_recording()
-#         return state
-#
-#     # Добавляем в полный буфер (для финальной обработки)
-#     state["full_buffer"].append(audio_chunk)
-#
-#     # Добавляем в частичный буфер
-#     state["partial_buffer"].append(audio_chunk)
-#
-#     # Проверяем длину частичного буфера
-#     partial_len = sum(len(c) for c in state["partial_buffer"])
-#     partial_sec = partial_len / 48000
-#
-#     if partial_sec >= 5.0:
-#         # Накопилось >=3 сек → обрабатываем (например, частичная транскрипция / анализ)
-#         partial_audio = np.concatenate(state["partial_buffer"])
-#
-#         # Здесь твоя логика: например, Whisper на partial_audio
-#         # partial_text = whisper_model.transcribe(partial_audio)['text']
-#         # Или просто симуляция:
-#         partial_result = f"Обработан чанк {partial_sec:.1f} сек: [симуляция частичной транскрипции]"
-#
-#         # Очищаем частичный буфер
-#         state["partial_buffer"] = []
-#
-#         output_dir = "chunks_5s"
-#         os.makedirs(output_dir, exist_ok=True)
-#         timestamp = int(time.time())
-#         mp3_path = os.path.join(output_dir, f"client_call_{timestamp}.mp3")
-#         # Сохраняем в wav → конвертируем в mp3 (если ffmpeg есть)
-#         wav_path = mp3_path.replace(".mp3", ".wav")
-#         try:
-#             import subprocess
-#             subprocess.run([
-#                 "ffmpeg", "-y", "-i", wav_path,
-#                 "-acodec", "libmp3lame", "-q:a", "2",
-#                 mp3_path
-#             ], check=True, capture_output=True)
-#             # os.remove(wav_path)  # раскомментируй, если не хочешь оставлять wav
-#             saved = mp3_path
-#         except:
-#             saved = wav_path
-#
-#         # Можно обновить видимый output, если добавишь (например, live_transcript.value += partial_result)
-#         # print(partial_result)  # для лога
-#
-#     return state
-#
-#     #return state + "\n" + partial_text, partial_text  # или транскрипцию
-#
-#
-# # 2. Функция для финальной обработки (вызывается при stop)
-# # def process_full_audio(state):
-# #     if not state["full_buffer"]:
-# #         return "Нет аудио", state
-# #
-# #     full_audio = np.concatenate(state["full_buffer"])
-# #     full_sec = len(full_audio) / state["samplerate"]
-# #
-# #     # Здесь полный Whisper
-# #     # full_text = whisper_model.transcribe(full_audio)['text']
-# #     # Или сохрани в файл:
-# #     # import soundfile as sf
-# #     # sf.write("full_call.wav", full_audio, state["samplerate"])
-# #
-# #     # Симуляция:
-# #     full_result = f"Полное аудио {full_sec:.1f} сек: [симуляция полной транскрипции]"
-# #
-# #     # Сбрасываем буферы
-# #     state["full_buffer"] = []
-# #     state["partial_buffer"] = []
-# #
-# #     # Возвращаем результат (в textbox или status)
-# #     return full_result, state
-#
-# def process_full_audio(state):
-#     if not state.get("full_buffer"):
-#         return "Нет аудио", state
-#
-#     full_audio = np.concatenate(state["full_buffer"])
-#
-#     SAMPLERATE = 48000  # ← самое частое значение в Gradio + browser microphone
-#     # или 44100, или 16000 — но 48000 встречается чаще всего
-#
-#     full_sec = len(full_audio) / SAMPLERATE
-#
-#     # ... дальше сохранение файла как раньше
-#
-#     output_dir = "recordings"
-#     os.makedirs(output_dir, exist_ok=True)
-#     timestamp = int(time.time())
-#     mp3_path = os.path.join(output_dir, f"client_call_{timestamp}.mp3")
-#
-#     # Сохраняем в wav → конвертируем в mp3 (если ffmpeg есть)
-#     wav_path = mp3_path.replace(".mp3", ".wav")
-#     sf.write(wav_path, full_audio, SAMPLERATE, subtype='PCM_16')
-#
-#     # ffmpeg → mp3 (опционально)
-#     try:
-#         import subprocess
-#         subprocess.run([
-#             "ffmpeg", "-y", "-i", wav_path,
-#             "-acodec", "libmp3lame", "-q:a", "2",
-#             mp3_path
-#         ], check=True, capture_output=True)
-#         # os.remove(wav_path)  # раскомментируй, если не хочешь оставлять wav
-#         saved = mp3_path
-#     except:
-#         saved = wav_path
-#
-#     result_text = f"Аудио сохранено: {saved}\nДлительность ≈ {full_sec:.1f} сек"
-#
-#     # очистка
-#     state["full_buffer"] = []
-#     state["partial_buffer"] = []
-#
-#     return result_text
+def load_models():
+    get_age_gender_predictor('.model_files/age_gender_model')
+    get_emotion_vad_predictor('.model_files/emotion_vad_model')

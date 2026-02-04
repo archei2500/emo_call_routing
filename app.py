@@ -26,6 +26,9 @@ def update_invisibility():
     return gr.update(visible=False), gr.update(visible=False)
 
 
+call.load_models()
+
+
 with gr.Blocks() as demo:
     with gr.Tab("Симуляция звонка"):
         gr.Markdown("### <center>Нажмите на кнопку ниже, чтобы начать звонок", visible=False)
@@ -38,11 +41,10 @@ with gr.Blocks() as demo:
         # состояние для фоновой обработки моделями
         stream_state = gr.State(
             value={
-                "ag_predictor_loaded": False,
-                "emo_vad_predictor_loaded": False,
                 "age_gender_processing": False,
                 "emotion_vad_processing": False,
                 "ag_result": None,
+                "retry_count": 0,
                 "age_trigger": False,
                 "age_confirmed": False,
                 "emo_vad_result": None,

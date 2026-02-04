@@ -153,7 +153,7 @@ class EmotionVADPredictor:
 emotion_predictor = None
 
 
-def get_emotion_predictor(model_path: str = None, device: str = None) -> EmotionVADPredictor:
+def get_emotion_vad_predictor(model_path: str = None, device: str = None) -> EmotionVADPredictor:
     """
     Функция для получения глобального экземпляра предсказателя эмоций.
 
