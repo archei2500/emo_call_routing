@@ -7,12 +7,18 @@ import time
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 import librosa
+import webrtcvad
+
 
 welcome_audio_path = "welcome.mp3"
 # welcome_duration = 5.433  # в секундах
 # delay_ms = int((welcome_duration + 0.5) * 1000)
 final_audio_path = "final.mp3"
 SAMPLERATE = 16000
+FRAME_MS = 30
+FRAME_SAMPLES = int(SAMPLERATE * FRAME_MS / 1000)  # 480 для 16000/30мс
+VAD_AGGRESSIVENESS = 2  # 0-3
+vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 
 
 def background_age_gender(audio_snapshot, stream_state):
@@ -74,30 +80,81 @@ def background_age_gender(audio_snapshot, stream_state):
         stream_state["age_gender_processing"] = False
 
 
-def analyze_audio_chunk(audio_array, sample_rate, age_gender_predictor, emotion_predictor):
-    """
-    Анализирует аудио-чанк с использованием обеих моделей.
-    """
-    results = {
-        "timestamp": time.time(),
-        "duration": len(audio_array) / sample_rate,
-        "sample_rate": sample_rate
-    }
+def background_emotion_vad(audio_snapshot, stream_state):
+    '''
+        В фоне запускает обработку аудиофрагмента моделью, которая определяет непрерывные измерения эмоций по голосу.
+        Итоговый результат будет сохранён в stream_state.
+    '''
+    model = get_emotion_vad_predictor()
+    new_result = model.predict(audio_snapshot, SAMPLERATE)
+    with stream_state["lock"]:
+        prev_result = stream_state.get("emo_vad_result")
+        if prev_result is None:
+            # первый запуск: просто присваиваем
+            stream_state["emo_vad_result"] = new_result
+        else:
+            aggregated_emotions = {"arousal": max(
+                prev_result["emotions"]["arousal"],
+                new_result["emotions"]["arousal"]
+            )}
 
-    try:
-        # Анализ возраста и пола
-        age_gender_result = age_gender_predictor.predict(audio_array, sample_rate)
-        results["age_gender"] = age_gender_result
+            # dominance и valence — min/max по полусфере
+            for dim in ["dominance", "valence"]:
+                p = prev_result["emotions"][dim]
+                n = new_result["emotions"][dim]
 
-        # Анализ эмоций
-        emotion_result = emotion_predictor.predict(audio_array, sample_rate)
-        results["emotion"] = emotion_result
+                if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
+                    aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
+                else:
+                    aggregated_emotions[dim] = (p + n) / 2
 
-    except Exception as e:
-        print(f"Ошибка анализа аудио: {e}")
-        results["error"] = str(e)
+            aggregated_result = {
+                "raw_predictions": [
+                    aggregated_emotions["arousal"],
+                    aggregated_emotions["dominance"],
+                    aggregated_emotions["valence"]
+                ],
+                "emotions": aggregated_emotions
+            }
 
-    return results
+            stream_state["emo_vad_result"] = aggregated_result
+
+            # модель свободна
+            stream_state["emotion_vad_processing"] = False
+
+
+def is_chunk_speech(audio_array: np.ndarray, sample_rate: int = SAMPLERATE) -> bool:
+    if len(audio_array) == 0:
+        return False
+
+    # конвертация в int16 (WebRTC требует PCM 16-bit) - надо проверить, не нужно ли такое остальным моделям!
+    if audio_array.dtype != np.int16:
+        if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
+            audio_array = np.int16(audio_array * 32767)  # нормализация из [-1..1] в [-32768..32767]
+        else:
+            audio_array = audio_array.astype(np.int16)
+
+    audio_array = audio_array.ravel()  # 1D массив
+
+    n_samples = len(audio_array)
+    n_frames = n_samples // FRAME_SAMPLES
+    if n_frames == 0:
+        return False
+
+    voiced_count = 0
+    for i in range(n_frames):
+        start = i * FRAME_SAMPLES
+        frame = audio_array[start: start + FRAME_SAMPLES]
+        if len(frame) != FRAME_SAMPLES:
+            continue  # пропускаем неполный фрейм (обычно в конце чанка)
+
+        frame_bytes = frame.tobytes()
+        is_speech = vad.is_speech(frame_bytes, sample_rate)
+        if is_speech:
+            voiced_count += 1
+
+    ratio = voiced_count / n_frames if n_frames > 0 else 0
+    return ratio >= 0.60  # порог (0.5-0.75)
 
 
 def process_partial_chunk(audio_data, audio_state, stream_state):
@@ -139,14 +196,17 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
         audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=SAMPLERATE)
         sample_rate = SAMPLERATE
 
+    # проверка voice activity в чанке: дальше не работаем, если не распознан голос
+    if not is_chunk_speech(audio_array):
+        return audio_state, stream_state
+
     # Добавляем в буферы
     audio_state["full_buffer"].append(audio_array)
     audio_state["emo_vad_buffer"].append(audio_array)
 
-    # ещё надо ж проверку на тишину
-
     should_run = False  # флаг для запуска фоновой обработки
 
+    # оценка необходимости запуска модели предсказания пола и возраста по голосу и её запуск
     with stream_state["lock"]:
         if stream_state["retry_count"] < 2:
             audio_state["ag_buffer"].append(audio_array)
@@ -175,6 +235,27 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
         threading.Thread(
             target=background_age_gender,
             args=(audio_snapshot, stream_state),
+            daemon=True
+        ).start()
+
+    should_run = False
+
+    # оценка необходимости (накоплено достаточно чанков) запуска модели предсказания эмоции по голосу и её запуск
+    with stream_state["lock"]:
+        if audio_state["emo_vad_buffer"]:
+            total_samples = sum(len(chunk) for chunk in audio_state["emo_vad_buffer"])
+            total_seconds = total_samples / sample_rate
+            if not stream_state["emotion_vad_processing"] and total_seconds >= 5.0:
+                should_run = True
+                partial_audio = np.concatenate(audio_state["emo_vad_buffer"])
+                audio_snapshot_2 = partial_audio.copy()
+                audio_state["emo_vad_buffer"] = []
+                stream_state["emotion_vad_processing"] = True
+
+    if should_run:
+        threading.Thread(
+            target=background_emotion_vad,
+            args=(audio_snapshot_2, stream_state),
             daemon=True
         ).start()
 

@@ -59,7 +59,7 @@ class EmotionVADPredictor:
     _initialized = False
 
     # Названия эмоциональных измерений
-    EMOTION_DIMENSIONS = ["arousal", "valence", "dominance"]
+    EMOTION_DIMENSIONS = ["arousal", "dominance", "valence"]
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
