@@ -26,6 +26,17 @@ def update_invisibility():
     return gr.update(visible=False), gr.update(visible=False)
 
 
+def update_ui_from_state(state):
+    if state.get("age_trigger") and not state.get("age_confirmed"):
+        return gr.update(visible=True)
+    return gr.update(visible=False)
+
+
+def confirm_age(state):
+    state["age_confirmed"] = True
+    return state
+
+
 call.load_models()
 
 
@@ -98,6 +109,23 @@ with gr.Blocks() as demo:
         stream_every=0.5
     )
 
+    # показ кнопки подтверждения возраста (если триггер сработал)
+    stream_state.change(
+        fn=update_ui_from_state,
+        inputs=stream_state,
+        outputs=confirm_age_btn
+    )
+    # и скрываем её, если возраст 18+ подтвердили
+    confirm_age_btn.click(
+        fn=confirm_age,
+        inputs=stream_state,
+        outputs=stream_state
+    ).then(
+        fn=update_ui_from_state,
+        inputs=stream_state,
+        outputs=confirm_age_btn
+    )
+
     # при остановке записи (пользователем или как истечёт время)
     recorder.stop_recording(
         fn=lambda: call.final_audio_path,
@@ -111,7 +139,7 @@ with gr.Blocks() as demo:
     ).then(
         fn=call.process_full_audio,
         inputs=[audio_state, stream_state],
-        outputs=[routing_result, audio_state]
+        outputs=[routing_result, audio_state, stream_state]
     )
 
     # когда воспроизведение второй записи останавливается (появляется финальное поле)

@@ -262,100 +262,147 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     return audio_state, stream_state
 
 
-def process_full_audio(state):
-    """
-    Обрабатывает полное аудио после завершения записи
-    """
-    if not state.get("full_buffer"):
-        return state, "Нет аудиоданных для обработки"
+def process_full_audio(audio_state, stream_state):
+    error = False
 
-    try:
-        # Проверяем, есть ли данные в буфере
-        valid_chunks = []
-        sample_rate = SAMPLERATE
+    if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
+        routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
+        # тут какая-то очистка
+        return routing_result, audio_state, stream_state
 
-        for chunk in state["full_buffer"]:
-            if chunk is not None and len(chunk) > 0:
-                # Нормализуем чанк
-                if len(chunk.shape) > 1:
-                    if chunk.shape[0] == 2:  # (2, samples)
-                        chunk = np.mean(chunk, axis=0)
-                        chunk = chunk.astype(np.float32)
-                    elif chunk.shape[1] == 2:  # (samples, 2)
-                        chunk = np.mean(chunk, axis=1)
-                        chunk = chunk.astype(np.float32)
-                    else:
-                        chunk = chunk[:, 0] if chunk.shape[1] > 0 else chunk.flatten()
-                        chunk = chunk.astype(np.float32)
-                else:
-                    chunk = chunk.astype(np.float32)
+    if stream_state["ag_result"]:
+        routing_result = "Возраст: " + stream_state["ag_result"]["age"]["years"]
+        routing_result.append("\nПол: ")
+        if stream_state["ag_result"]["gender"]["predicted"] == "male":
+            routing_result.append("мужской")
+        else:
+            routing_result.append("женский")
+    else:
+        routing_result = "Ошибка: демографические признаки не были определены."
+        error = True
 
-                valid_chunks.append(chunk)
+    if stream_state["emo_vad_result"]:
+        routing_result.append("\nЭмоциональное состояние:")
+        routing_result.append("\nValence: " + stream_state["emo_vad_result"]["emotions"]["valence"])
+        routing_result.append("\nArousal: " + stream_state["emo_vad_result"]["emotions"]["arousal"])
+        routing_result.append("\nDominance: " + stream_state["emo_vad_result"]["emotions"]["dominance"])
+    else:
+        routing_result.append("\nОшибка: эмоции не были определены.")
+        error = True
 
-        if not valid_chunks:
-            return state, "Нет валидных аудиоданных"
+    routing_result.append("\n\nРекомендации:")
 
-        # Объединяем все чанки
-        full_audio = np.concatenate(valid_chunks)
+    if not error:
+        if stream_state["ag_result"]["age"]["years"] >= 60:
+            routing_result.append("\nТерпеливый специалист, который готов спокойно и долго объяснять.")
+        if stream_state["ag_result"]["gender"]["predicted"] == "male":
+            routing_result.append("\nСпециалист-мужчина.")
+        elif stream_state["ag_result"]["gender"]["predicted"] == "female":
+            routing_result.append("\nСпециалист-женщина.")
+        if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
+                stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
+            routing_result.append("\nСтрессоустойчивый специалист. Такой, у которого это не конец смены.")
 
-        # Проверяем длину
-        if len(full_audio) == 0:
-            return state, "Аудио пустое"
+    # какая-то очистка
 
-        # Рассчитываем длительность
-        duration_seconds = len(full_audio) / SAMPLERATE
+    return routing_result, audio_state, stream_state
 
-        # Сохраняем полное аудио
-        output_dir = "recordings"
-        os.makedirs(output_dir, exist_ok=True)
-        timestamp = int(time.time())
-        wav_path = os.path.join(output_dir, f"full_recording_{timestamp}.wav")
 
-        # Нормализуем громкость если нужно
-        max_val = np.max(np.abs(full_audio))
-        if max_val > 1.0:
-            full_audio = full_audio / max_val
 
-        # Сохраняем как WAV
-        sf.write(wav_path, full_audio, SAMPLERATE)
-
-        # Пробуем конвертировать в MP3
-        try:
-            import subprocess
-            mp3_path = wav_path.replace(".wav", ".mp3")
-            subprocess.run([
-                "ffmpeg", "-y", "-i", wav_path,
-                "-acodec", "libmp3lame", "-q:a", "2",
-                mp3_path
-            ], check=True, capture_output=True)
-            saved_path = mp3_path
-        except Exception as e:
-            print(f"Не удалось конвертировать в MP3: {e}")
-            saved_path = wav_path
-
-        result_text = f"✅ Аудио сохранено: {saved_path}\n🎵 Длительность: {duration_seconds:.1f} секунд"
-
-        # Очищаем буферы
-        state["full_buffer"] = []
-        state["partial_buffer"] = []
-
-        return result_text, state
-
-    except Exception as e:
-        print(f"Ошибка в process_full_audio: {e}")
-        import traceback
-        traceback.print_exc()
-
-        # Отладочная информация
-        print("\n=== Отладка состояния ===")
-        print(f"Количество чанков: {len(state.get('full_buffer', []))}")
-        for i, chunk in enumerate(state.get('full_buffer', [])):
-            if chunk is not None:
-                print(f"Чанк {i}: тип={type(chunk)}, форма={chunk.shape if hasattr(chunk, 'shape') else 'N/A'}")
-            else:
-                print(f"Чанк {i}: None")
-
-        return state, f"⚠️ Ошибка обработки: {str(e)}"
+# def process_full_audio(state):
+#     """
+#     Обрабатывает полное аудио после завершения записи
+#     """
+#     if not state.get("full_buffer"):
+#         return state, "Нет аудиоданных для обработки"
+#
+#     try:
+#         # Проверяем, есть ли данные в буфере
+#         valid_chunks = []
+#         sample_rate = SAMPLERATE
+#
+#         for chunk in state["full_buffer"]:
+#             if chunk is not None and len(chunk) > 0:
+#                 # Нормализуем чанк
+#                 if len(chunk.shape) > 1:
+#                     if chunk.shape[0] == 2:  # (2, samples)
+#                         chunk = np.mean(chunk, axis=0)
+#                         chunk = chunk.astype(np.float32)
+#                     elif chunk.shape[1] == 2:  # (samples, 2)
+#                         chunk = np.mean(chunk, axis=1)
+#                         chunk = chunk.astype(np.float32)
+#                     else:
+#                         chunk = chunk[:, 0] if chunk.shape[1] > 0 else chunk.flatten()
+#                         chunk = chunk.astype(np.float32)
+#                 else:
+#                     chunk = chunk.astype(np.float32)
+#
+#                 valid_chunks.append(chunk)
+#
+#         if not valid_chunks:
+#             return state, "Нет валидных аудиоданных"
+#
+#         # Объединяем все чанки
+#         full_audio = np.concatenate(valid_chunks)
+#
+#         # Проверяем длину
+#         if len(full_audio) == 0:
+#             return state, "Аудио пустое"
+#
+#         # Рассчитываем длительность
+#         duration_seconds = len(full_audio) / SAMPLERATE
+#
+#         # Сохраняем полное аудио
+#         output_dir = "recordings"
+#         os.makedirs(output_dir, exist_ok=True)
+#         timestamp = int(time.time())
+#         wav_path = os.path.join(output_dir, f"full_recording_{timestamp}.wav")
+#
+#         # Нормализуем громкость если нужно
+#         max_val = np.max(np.abs(full_audio))
+#         if max_val > 1.0:
+#             full_audio = full_audio / max_val
+#
+#         # Сохраняем как WAV
+#         sf.write(wav_path, full_audio, SAMPLERATE)
+#
+#         # Пробуем конвертировать в MP3
+#         try:
+#             import subprocess
+#             mp3_path = wav_path.replace(".wav", ".mp3")
+#             subprocess.run([
+#                 "ffmpeg", "-y", "-i", wav_path,
+#                 "-acodec", "libmp3lame", "-q:a", "2",
+#                 mp3_path
+#             ], check=True, capture_output=True)
+#             saved_path = mp3_path
+#         except Exception as e:
+#             print(f"Не удалось конвертировать в MP3: {e}")
+#             saved_path = wav_path
+#
+#         result_text = f"✅ Аудио сохранено: {saved_path}\n🎵 Длительность: {duration_seconds:.1f} секунд"
+#
+#         # Очищаем буферы
+#         state["full_buffer"] = []
+#         state["partial_buffer"] = []
+#
+#         return result_text, state
+#
+#     except Exception as e:
+#         print(f"Ошибка в process_full_audio: {e}")
+#         import traceback
+#         traceback.print_exc()
+#
+#         # Отладочная информация
+#         print("\n=== Отладка состояния ===")
+#         print(f"Количество чанков: {len(state.get('full_buffer', []))}")
+#         for i, chunk in enumerate(state.get('full_buffer', [])):
+#             if chunk is not None:
+#                 print(f"Чанк {i}: тип={type(chunk)}, форма={chunk.shape if hasattr(chunk, 'shape') else 'N/A'}")
+#             else:
+#                 print(f"Чанк {i}: None")
+#
+#         return state, f"⚠️ Ошибка обработки: {str(e)}"
 
 
 def load_models():
