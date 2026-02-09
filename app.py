@@ -58,10 +58,10 @@ with gr.Blocks() as demo:
                 "retry_count": 0,
                 "age_trigger": False,
                 "age_confirmed": False,
-                "emo_vad_result": None,
-                "state_lock": threading.Lock()
+                "emo_vad_result": None
             }
         )
+        # "state_lock": threading.Lock()
         player_start_text = gr.Markdown("Нажмите на кнопку воспроизведения, чтобы прослушать приветствие.", visible=False)
         player_end_text = gr.Markdown("Нажмите на кнопку воспроизведения, чтобы прослушать финальное сообщение.", visible=False)
         player1 = gr.Audio(format="mp3", visible=False, autoplay=False, interactive=True, elem_id="player")
@@ -110,7 +110,14 @@ with gr.Blocks() as demo:
     )
 
     # показ кнопки подтверждения возраста (если триггер сработал)
-    stream_state.change(
+    # stream_state.change(
+    #     fn=update_ui_from_state,
+    #     inputs=stream_state,
+    #     outputs=confirm_age_btn
+    # )
+    # или так
+    timer = gr.Timer(value=1.0)
+    timer.tick(
         fn=update_ui_from_state,
         inputs=stream_state,
         outputs=confirm_age_btn

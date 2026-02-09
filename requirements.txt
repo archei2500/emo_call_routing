@@ -4,4 +4,4 @@ numpy
 librosa
 webrtcvad
 torch
-transformers
+transformers==4.57.6

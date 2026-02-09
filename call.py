@@ -19,6 +19,7 @@ FRAME_MS = 30
 FRAME_SAMPLES = int(SAMPLERATE * FRAME_MS / 1000)  # 480 для 16000/30мс
 VAD_AGGRESSIVENESS = 2  # 0-3
 vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+STATE_LOCK = threading.Lock()
 
 
 def background_age_gender(audio_snapshot, stream_state):
@@ -28,7 +29,7 @@ def background_age_gender(audio_snapshot, stream_state):
     '''
     model = get_age_gender_predictor()
     new_result = model.predict(audio_snapshot, SAMPLERATE)
-    with stream_state["lock"]:
+    with STATE_LOCK:
         prev_result = stream_state.get("ag_result")
 
         if prev_result is None:
@@ -79,6 +80,8 @@ def background_age_gender(audio_snapshot, stream_state):
         # модель свободна
         stream_state["age_gender_processing"] = False
 
+    print("Гендер прошёл")
+
 
 def background_emotion_vad(audio_snapshot, stream_state):
     '''
@@ -87,7 +90,7 @@ def background_emotion_vad(audio_snapshot, stream_state):
     '''
     model = get_emotion_vad_predictor()
     new_result = model.predict(audio_snapshot, SAMPLERATE)
-    with stream_state["lock"]:
+    with STATE_LOCK:
         prev_result = stream_state.get("emo_vad_result")
         if prev_result is None:
             # первый запуск: просто присваиваем
@@ -121,6 +124,8 @@ def background_emotion_vad(audio_snapshot, stream_state):
 
             # модель свободна
             stream_state["emotion_vad_processing"] = False
+
+        print("Эмоции прошли")
 
 
 def is_chunk_speech(audio_array: np.ndarray, sample_rate: int = SAMPLERATE) -> bool:
@@ -193,6 +198,26 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
             audio_array = audio_array[:, 0] if audio_array.shape[1] > 0 else audio_array[:, 0]
 
     if sample_rate != SAMPLERATE:
+        # Конвертируем в float32 для librosa
+        audio_array = audio_array.astype(np.float32)
+
+        # Если это int типы, нормализуем к [-1, 1]
+        if np.issubdtype(audio_array.dtype, np.integer):
+            # Автоматически определяем тип
+            if audio_array.dtype == np.int16:
+                audio_array = audio_array / 32768.0
+            elif audio_array.dtype == np.int32:
+                audio_array = audio_array / 2147483648.0
+            elif audio_array.dtype == np.int8:
+                audio_array = audio_array / 128.0
+            elif audio_array.dtype == np.uint8:
+                audio_array = (audio_array - 128) / 128.0
+            # Если другой тип, просто делим на max(abs())
+            else:
+                max_val = np.max(np.abs(audio_array))
+                if max_val > 0:
+                    audio_array = audio_array / max_val
+
         audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=SAMPLERATE)
         sample_rate = SAMPLERATE
 
@@ -207,13 +232,25 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     should_run = False  # флаг для запуска фоновой обработки
 
     # оценка необходимости запуска модели предсказания пола и возраста по голосу и её запуск
-    with stream_state["lock"]:
+    with STATE_LOCK:
         if stream_state["retry_count"] < 2:
             audio_state["ag_buffer"].append(audio_array)
-            total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
-            total_seconds = total_samples / sample_rate
 
-            if not stream_state["age_gender_processing"] and total_seconds >= 3.0:
+            # total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
+
+            total_samples_needed = int(2.5 * sample_rate)
+            current_samples = 0
+            last_chunks = []  # список чанков с конца
+
+            for chunk in reversed(audio_state["ag_buffer"]):
+                current_samples += len(chunk)
+                last_chunks.append(chunk)
+                if current_samples >= total_samples_needed:
+                    break
+
+            total_seconds = current_samples / sample_rate
+
+            if not stream_state["age_gender_processing"] and total_seconds >= 2.5:
                 # первый раз
                 if not stream_state["ag_result"]:
                     should_run = True
@@ -226,7 +263,9 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                     stream_state["retry_count"] += 1
 
                 if should_run:
-                    partial_audio = np.concatenate(audio_state["ag_buffer"])
+                    # берём только эти последние чанки (разворачиваем обратно в порядок)
+                    partial_audio = np.concatenate(last_chunks[::-1])
+                    # partial_audio = np.concatenate(audio_state["ag_buffer"])
                     audio_snapshot = partial_audio.copy()
                     audio_state["ag_buffer"] = []
                     stream_state["age_gender_processing"] = True
@@ -241,13 +280,24 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     should_run = False
 
     # оценка необходимости (накоплено достаточно чанков) запуска модели предсказания эмоции по голосу и её запуск
-    with stream_state["lock"]:
+    with STATE_LOCK:
         if audio_state["emo_vad_buffer"]:
-            total_samples = sum(len(chunk) for chunk in audio_state["emo_vad_buffer"])
-            total_seconds = total_samples / sample_rate
-            if not stream_state["emotion_vad_processing"] and total_seconds >= 5.0:
+            total_samples_needed = int(4.5 * sample_rate)
+            current_samples = 0
+            last_chunks = []  # список чанков с конца
+
+            for chunk in reversed(audio_state["emo_vad_buffer"]):
+                current_samples += len(chunk)
+                last_chunks.append(chunk)
+                if current_samples >= total_samples_needed:
+                    break
+
+            # total_samples = sum(len(chunk) for chunk in audio_state["emo_vad_buffer"])
+            total_seconds = current_samples / sample_rate
+            if not stream_state["emotion_vad_processing"] and total_seconds >= 4.5:
                 should_run = True
-                partial_audio = np.concatenate(audio_state["emo_vad_buffer"])
+                # partial_audio = np.concatenate(audio_state["emo_vad_buffer"])
+                partial_audio = np.concatenate(last_chunks[::-1])
                 audio_snapshot_2 = partial_audio.copy()
                 audio_state["emo_vad_buffer"] = []
                 stream_state["emotion_vad_processing"] = True
@@ -271,39 +321,48 @@ def process_full_audio(audio_state, stream_state):
         return routing_result, audio_state, stream_state
 
     if stream_state["ag_result"]:
-        routing_result = "Возраст: " + stream_state["ag_result"]["age"]["years"]
-        routing_result.append("\nПол: ")
+        routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
+        routing_result += "\nПол: "
         if stream_state["ag_result"]["gender"]["predicted"] == "male":
-            routing_result.append("мужской")
+            routing_result += "мужской"
         else:
-            routing_result.append("женский")
+            routing_result += "женский"
     else:
         routing_result = "Ошибка: демографические признаки не были определены."
         error = True
 
     if stream_state["emo_vad_result"]:
-        routing_result.append("\nЭмоциональное состояние:")
-        routing_result.append("\nValence: " + stream_state["emo_vad_result"]["emotions"]["valence"])
-        routing_result.append("\nArousal: " + stream_state["emo_vad_result"]["emotions"]["arousal"])
-        routing_result.append("\nDominance: " + stream_state["emo_vad_result"]["emotions"]["dominance"])
+        routing_result += "\nЭмоциональное состояние:"
+        routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
+        routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
+        routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
     else:
-        routing_result.append("\nОшибка: эмоции не были определены.")
+        routing_result += "\nОшибка: эмоции не были определены."
         error = True
 
-    routing_result.append("\n\nРекомендации:")
+    routing_result += "\n\nРекомендации:"
 
     if not error:
         if stream_state["ag_result"]["age"]["years"] >= 60:
-            routing_result.append("\nТерпеливый специалист, который готов спокойно и долго объяснять.")
+            routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
         if stream_state["ag_result"]["gender"]["predicted"] == "male":
-            routing_result.append("\nСпециалист-мужчина.")
+            routing_result += "\nСпециалист-мужчина."
         elif stream_state["ag_result"]["gender"]["predicted"] == "female":
-            routing_result.append("\nСпециалист-женщина.")
+            routing_result += "\nСпециалист-женщина."
         if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
                 stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
-            routing_result.append("\nСтрессоустойчивый специалист. Такой, у которого это не конец смены.")
+            routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
 
-    # какая-то очистка
+    # очистка
+    audio_state["full_buffer"] = []
+    audio_state["ag_buffer"] = []
+    audio_state["emo_vad_buffer"] = []
+
+    stream_state["ag_result"] = None
+    stream_state["retry_count"] = 0
+    stream_state["age_trigger"] = False
+    stream_state["age_confirmed"] = False
+    stream_state["emo_vad_result"] = None
 
     return routing_result, audio_state, stream_state
 
@@ -406,5 +465,5 @@ def process_full_audio(audio_state, stream_state):
 
 
 def load_models():
-    get_age_gender_predictor('.model_files/age_gender_model')
-    get_emotion_vad_predictor('.model_files/emotion_vad_model')
+    get_age_gender_predictor('model_files/age_gender_model')
+    get_emotion_vad_predictor('model_files/emotion_vad_model')
