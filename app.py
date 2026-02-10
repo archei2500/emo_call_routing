@@ -89,6 +89,9 @@ with gr.Blocks() as demo:
     ).then(
         fn=update_visibility,
         outputs=[player_start_text, player1]
+    ).then(
+        fn=lambda: gr.update(visible=False),
+        outputs=routing_result
     )
 
     # когда воспроизведение записи останавливается (появляется рекордер)
@@ -156,6 +159,9 @@ with gr.Blocks() as demo:
     ).then(
         fn=lambda: gr.update(visible=True),
         outputs=routing_result
+    ).then(
+        fn=lambda: gr.update(visible=True),
+        outputs=call_btn  # для бесконечной работы
     )
 
 
