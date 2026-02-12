@@ -37,6 +37,13 @@ def confirm_age(state):
     return state
 
 
+def increment_call_id(state):
+    state["call_id"] += 1
+    state["age_gender_processing"] = False
+    state["emotion_vad_processing"] = False
+    return state
+
+
 call.load_models()
 
 
@@ -58,7 +65,8 @@ with gr.Blocks() as demo:
                 "retry_count": 0,
                 "age_trigger": False,
                 "age_confirmed": False,
-                "emo_vad_result": None
+                "emo_vad_result": None,
+                "call_id": 0
             }
         )
         # "state_lock": threading.Lock()
@@ -98,6 +106,10 @@ with gr.Blocks() as demo:
     player1.stop(
         fn=update_invisibility,
         outputs=[player_start_text, player1]
+    ).then(
+        fn=increment_call_id,
+        inputs=stream_state,
+        outputs=stream_state
     ).then(
         fn=lambda: [gr.update(visible=True), gr.update(visible=True), gr.update(visible=True)],
         outputs=[recorder_text, recorder, recorder_final_text]
@@ -150,6 +162,14 @@ with gr.Blocks() as demo:
         fn=call.process_full_audio,
         inputs=[audio_state, stream_state],
         outputs=[routing_result, audio_state, stream_state]
+    ).then(
+        fn=lambda: gr.update(visible=False),
+        outputs=confirm_age_btn
+    ).then(
+        fn=lambda s: {**s, "ag_result": None, "emo_vad_result": None, "retry_count": 0, "age_trigger": False,
+                      "age_confirmed": False},
+        inputs=stream_state,
+        outputs=stream_state
     )
 
     # когда воспроизведение второй записи останавливается (появляется финальное поле)

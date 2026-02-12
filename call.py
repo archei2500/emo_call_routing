@@ -8,6 +8,7 @@ from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 import librosa
 import webrtcvad
+import time
 
 
 welcome_audio_path = "welcome.mp3"
@@ -22,110 +23,131 @@ vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 STATE_LOCK = threading.Lock()
 
 
-def background_age_gender(audio_snapshot, stream_state):
+def background_age_gender(audio_snapshot, stream_state, current_call_id):
     '''
     В фоне запускает обработку аудиофрагмента моделью, которая определяет возраст и пол человека по голосу.
     Итоговый результат будет сохранён в stream_state.
     '''
+    with STATE_LOCK:
+        if stream_state.get("call_id") != current_call_id:
+            stream_state["age_gender_processing"] = False
+            print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
+            return
     model = get_age_gender_predictor()
     new_result = model.predict(audio_snapshot, SAMPLERATE)
     with STATE_LOCK:
-        prev_result = stream_state.get("ag_result")
+        if stream_state.get("call_id") == current_call_id:
+            print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
+            prev_result = stream_state.get("ag_result")
 
-        if prev_result is None:
-            # первый запуск: просто присваиваем
-            stream_state["ag_result"] = new_result
-        else:
-            avg_raw_score = (prev_result["age"]["raw_score"] + new_result["age"]["raw_score"]) / 2
-            aggregated_age_years = round(100 * avg_raw_score)
+            if prev_result is None:
+                # первый запуск: просто присваиваем
+                stream_state["ag_result"] = new_result
+            else:
+                avg_raw_score = (prev_result["age"]["raw_score"] + new_result["age"]["raw_score"]) / 2
+                aggregated_age_years = round(100 * avg_raw_score)
 
-            # агрегация вероятностей: берём максимумы для уверенности
-            max_child_prob = max(
-                prev_result["age_category"]["child_probability"],
-                new_result["age_category"]["child_probability"]
-            )
-            max_female_prob = max(
-                prev_result["gender"]["probabilities"]["female"],
-                new_result["gender"]["probabilities"]["female"]
-            )
-            max_male_prob = max(
-                prev_result["gender"]["probabilities"]["male"],
-                new_result["gender"]["probabilities"]["male"]
-            )
+                # агрегация вероятностей: берём максимумы для уверенности
+                max_child_prob = max(
+                    prev_result["age_category"]["child_probability"],
+                    new_result["age_category"]["child_probability"]
+                )
+                max_female_prob = max(
+                    prev_result["gender"]["probabilities"]["female"],
+                    new_result["gender"]["probabilities"]["female"]
+                )
+                max_male_prob = max(
+                    prev_result["gender"]["probabilities"]["male"],
+                    new_result["gender"]["probabilities"]["male"]
+                )
 
-            # пересчёт на основе агрегированных вероятностей
-            aggregated_result = {"age": {
-                "years": aggregated_age_years,  # средний возраст
-                "raw_score": avg_raw_score
-            }, "gender": {
-                "probabilities": {
-                    "female": max_female_prob,
-                    "male": max_male_prob
-                },
-                "predicted": "female" if max_female_prob > max_male_prob else "male"
-            }, "age_category": {
-                "is_child": max_child_prob > 0.5 or aggregated_age_years < 18,
-                "child_probability": max_child_prob,
-                "is_adult": max_child_prob <= 0.5 and aggregated_age_years >= 18,
-                "adult_probability": 1 - max_child_prob
-            }}
+                # пересчёт на основе агрегированных вероятностей
+                aggregated_result = {"age": {
+                    "years": aggregated_age_years,  # средний возраст
+                    "raw_score": avg_raw_score
+                }, "gender": {
+                    "probabilities": {
+                        "female": max_female_prob,
+                        "male": max_male_prob
+                    },
+                    "predicted": "female" if max_female_prob > max_male_prob else "male"
+                }, "age_category": {
+                    "is_child": max_child_prob > 0.5 or aggregated_age_years < 18,
+                    "child_probability": max_child_prob,
+                    "is_adult": max_child_prob <= 0.5 and aggregated_age_years >= 18,
+                    "adult_probability": 1 - max_child_prob
+                }}
 
-            stream_state["ag_result"] = aggregated_result
+                stream_state["ag_result"] = aggregated_result
 
-        # установка триггера
-        final_result = stream_state["ag_result"]
-        if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
-            stream_state["age_trigger"] = True
+            # установка триггера
+            final_result = stream_state["ag_result"]
+            if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
+                stream_state["age_trigger"] = True
+
+        print("После отработки модели генедра/возраста:")
+        print(stream_state)
 
         # модель свободна
         stream_state["age_gender_processing"] = False
 
-    print("Гендер прошёл")
+    print("Модель гендера/возраста отработала.")
 
 
-def background_emotion_vad(audio_snapshot, stream_state):
+def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
     '''
         В фоне запускает обработку аудиофрагмента моделью, которая определяет непрерывные измерения эмоций по голосу.
         Итоговый результат будет сохранён в stream_state.
     '''
+    with STATE_LOCK:
+        if stream_state.get("call_id") != current_call_id:
+            stream_state["emotion_vad_processing"] = False
+            print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
+            return
     model = get_emotion_vad_predictor()
     new_result = model.predict(audio_snapshot, SAMPLERATE)
+    print(new_result)
     with STATE_LOCK:
-        prev_result = stream_state.get("emo_vad_result")
-        if prev_result is None:
-            # первый запуск: просто присваиваем
-            stream_state["emo_vad_result"] = new_result
-        else:
-            aggregated_emotions = {"arousal": max(
-                prev_result["emotions"]["arousal"],
-                new_result["emotions"]["arousal"]
-            )}
+        if stream_state.get("call_id") == current_call_id:
+            print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
+            prev_result = stream_state.get("emo_vad_result")
+            if prev_result is None:
+                # первый запуск: просто присваиваем
+                stream_state["emo_vad_result"] = new_result
+            else:
+                aggregated_emotions = {"arousal": max(
+                    prev_result["emotions"]["arousal"],
+                    new_result["emotions"]["arousal"]
+                )}
 
-            # dominance и valence — min/max по полусфере
-            for dim in ["dominance", "valence"]:
-                p = prev_result["emotions"][dim]
-                n = new_result["emotions"][dim]
+                # dominance и valence — min/max по полусфере
+                for dim in ["dominance", "valence"]:
+                    p = prev_result["emotions"][dim]
+                    n = new_result["emotions"][dim]
 
-                if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
-                    aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
-                else:
-                    aggregated_emotions[dim] = (p + n) / 2
+                    if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
+                        aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
+                    else:
+                        aggregated_emotions[dim] = (p + n) / 2
 
-            aggregated_result = {
-                "raw_predictions": [
-                    aggregated_emotions["arousal"],
-                    aggregated_emotions["dominance"],
-                    aggregated_emotions["valence"]
-                ],
-                "emotions": aggregated_emotions
-            }
+                aggregated_result = {
+                    "raw_predictions": [
+                        aggregated_emotions["arousal"],
+                        aggregated_emotions["dominance"],
+                        aggregated_emotions["valence"]
+                    ],
+                    "emotions": aggregated_emotions
+                }
 
-            stream_state["emo_vad_result"] = aggregated_result
+                stream_state["emo_vad_result"] = aggregated_result
 
-            # модель свободна
-            stream_state["emotion_vad_processing"] = False
+        print("После отработки модели эмоций:")
+        print(stream_state)
 
-        print("Эмоции прошли")
+        # модель свободна
+        stream_state["emotion_vad_processing"] = False
+
+    print("Модель эмоций отработала.")
 
 
 def is_chunk_speech(audio_array: np.ndarray, sample_rate: int = SAMPLERATE) -> bool:
@@ -263,6 +285,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                     stream_state["retry_count"] += 1
 
                 if should_run:
+                    current_call_id = stream_state["call_id"]
                     # берём только эти последние чанки (разворачиваем обратно в порядок)
                     partial_audio = np.concatenate(last_chunks[::-1])
                     # partial_audio = np.concatenate(audio_state["ag_buffer"])
@@ -273,7 +296,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     if should_run:
         threading.Thread(
             target=background_age_gender,
-            args=(audio_snapshot, stream_state),
+            args=(audio_snapshot, stream_state, current_call_id),
             daemon=True
         ).start()
 
@@ -282,7 +305,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     # оценка необходимости (накоплено достаточно чанков) запуска модели предсказания эмоции по голосу и её запуск
     with STATE_LOCK:
         if audio_state["emo_vad_buffer"]:
-            total_samples_needed = int(4.5 * sample_rate)
+            total_samples_needed = int(3 * sample_rate)
             current_samples = 0
             last_chunks = []  # список чанков с конца
 
@@ -294,18 +317,19 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
 
             # total_samples = sum(len(chunk) for chunk in audio_state["emo_vad_buffer"])
             total_seconds = current_samples / sample_rate
-            if not stream_state["emotion_vad_processing"] and total_seconds >= 4.5:
+            if not stream_state["emotion_vad_processing"] and total_seconds >= 3:
                 should_run = True
                 # partial_audio = np.concatenate(audio_state["emo_vad_buffer"])
                 partial_audio = np.concatenate(last_chunks[::-1])
                 audio_snapshot_2 = partial_audio.copy()
                 audio_state["emo_vad_buffer"] = []
                 stream_state["emotion_vad_processing"] = True
+                current_call_id = stream_state["call_id"]
 
     if should_run:
         threading.Thread(
             target=background_emotion_vad,
-            args=(audio_snapshot_2, stream_state),
+            args=(audio_snapshot_2, stream_state, current_call_id),
             daemon=True
         ).start()
 
@@ -313,56 +337,72 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
 
 
 def process_full_audio(audio_state, stream_state):
+    print("Что у нас тут такое?")
+    print(stream_state)
+
+    max_wait_seconds = 8.0  # максимум ждём 8 секунд
+    sleep_interval = 0.2  # проверяем каждые 200 мс
+
+    waited = 0.0
+    while waited < max_wait_seconds:
+        with STATE_LOCK:
+            age_done = not stream_state["age_gender_processing"] or stream_state["ag_result"] is not None
+            emo_done = not stream_state["emotion_vad_processing"] or stream_state["emo_vad_result"] is not None
+        if age_done and emo_done:
+            break
+        time.sleep(sleep_interval)
+        waited += sleep_interval
+
+    if waited >= max_wait_seconds:
+        print(f"Warning: время ожидания результатов истекло после {waited:.1f} сек")
+
     error = False
 
-    if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
-        routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
-        # тут какая-то очистка
-        return routing_result, audio_state, stream_state
+    with STATE_LOCK:
+        if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
+            routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
+            audio_state["full_buffer"] = []
+            audio_state["ag_buffer"] = []
+            audio_state["emo_vad_buffer"] = []
+            return routing_result, audio_state, stream_state
 
-    if stream_state["ag_result"]:
-        routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
-        routing_result += "\nПол: "
-        if stream_state["ag_result"]["gender"]["predicted"] == "male":
-            routing_result += "мужской"
+        if stream_state["ag_result"]:
+            routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
+            routing_result += "\nПол: "
+            if stream_state["ag_result"]["gender"]["predicted"] == "male":
+                routing_result += "мужской"
+            else:
+                routing_result += "женский"
         else:
-            routing_result += "женский"
-    else:
-        routing_result = "Ошибка: демографические признаки не были определены."
-        error = True
+            routing_result = "Ошибка: демографические признаки не были определены."
+            error = True
 
-    if stream_state["emo_vad_result"]:
-        routing_result += "\nЭмоциональное состояние:"
-        routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
-        routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
-        routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
-    else:
-        routing_result += "\nОшибка: эмоции не были определены."
-        error = True
+        if stream_state["emo_vad_result"]:
+            routing_result += "\nЭмоциональное состояние:"
+            routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
+            routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
+            routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
+        else:
+            routing_result += "\nОшибка: эмоции не были определены."
+            error = True
 
-    routing_result += "\n\nРекомендации:"
+        routing_result += "\n\nРекомендации:"
 
-    if not error:
-        if stream_state["ag_result"]["age"]["years"] >= 60:
-            routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
-        if stream_state["ag_result"]["gender"]["predicted"] == "male":
-            routing_result += "\nСпециалист-мужчина."
-        elif stream_state["ag_result"]["gender"]["predicted"] == "female":
-            routing_result += "\nСпециалист-женщина."
-        if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
-                stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
-            routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
+        if not error:
+            if stream_state["ag_result"]["age"]["years"] >= 60:
+                routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
+            if stream_state["ag_result"]["gender"]["predicted"] == "male":
+                routing_result += "\nСпециалист-мужчина."
+            elif stream_state["ag_result"]["gender"]["predicted"] == "female":
+                routing_result += "\nСпециалист-женщина."
+            if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
+                    stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
+                routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
 
     # очистка
     audio_state["full_buffer"] = []
     audio_state["ag_buffer"] = []
     audio_state["emo_vad_buffer"] = []
-
-    stream_state["ag_result"] = None
-    stream_state["retry_count"] = 0
-    stream_state["age_trigger"] = False
-    stream_state["age_confirmed"] = False
-    stream_state["emo_vad_result"] = None
 
     return routing_result, audio_state, stream_state
 
