@@ -5,3 +5,4 @@ librosa
 webrtcvad
 torch
 transformers==4.57.6
+nemo_toolkit[asr]

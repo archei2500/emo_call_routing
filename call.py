@@ -6,6 +6,7 @@ import numpy as np
 # import time
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
+from models.parakeet import get_asr_model
 import librosa
 import webrtcvad
 import time
@@ -399,13 +400,16 @@ def process_full_audio(audio_state, stream_state):
                     stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
                 routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
 
+    full_audio = np.concatenate(audio_state["full_buffer"])
+    asr_model = get_asr_model()
+    transcription = asr_model.transcribe(full_audio, SAMPLERATE)
+
     # очистка
     audio_state["full_buffer"] = []
     audio_state["ag_buffer"] = []
     audio_state["emo_vad_buffer"] = []
 
-    return routing_result, audio_state, stream_state
-
+    return routing_result, audio_state, stream_state, transcription
 
 
 # def process_full_audio(state):
@@ -507,3 +511,4 @@ def process_full_audio(audio_state, stream_state):
 def load_models():
     get_age_gender_predictor('model_files/age_gender_model')
     get_emotion_vad_predictor('model_files/emotion_vad_model')
+    get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
