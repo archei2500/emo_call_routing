@@ -405,9 +405,9 @@ def process_full_audio(audio_state, stream_state):
     transcription = asr_model.transcribe(full_audio, SAMPLERATE)
 
     # очистка
-    audio_state["full_buffer"] = []
-    audio_state["ag_buffer"] = []
-    audio_state["emo_vad_buffer"] = []
+    # audio_state["full_buffer"] = []
+    # audio_state["ag_buffer"] = []
+    # audio_state["emo_vad_buffer"] = []
 
     return routing_result, audio_state, stream_state, transcription
 

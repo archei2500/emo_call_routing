@@ -27,7 +27,8 @@ class Parakeet:
             else:
                 self.device = torch.device(device)
 
-            self.model = nemo_asr.models.ASRModel.from_pretrained(model_name=self.model_path)
+            #self.model = nemo_asr.models.ASRModel.from_pretrained(model_name=self.model_path)
+            self.model = nemo_asr.models.ASRModel.restore_from(restore_path=self.model_path)
 
             self.model.to(self.device)
             self.model.eval()

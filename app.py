@@ -170,6 +170,10 @@ with gr.Blocks() as demo:
                       "age_confirmed": False},
         inputs=stream_state,
         outputs=stream_state
+    ).then(
+        fn=lambda s: {**s, "full_buffer": [], "ag_buffer": [], "emo_vad_buffer": []},
+        inputs=audio_state,
+        outputs=audio_state
     )
 
     # когда воспроизведение второй записи останавливается (появляется финальное поле)
