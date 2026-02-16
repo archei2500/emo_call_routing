@@ -6,6 +6,8 @@ import numpy as np
 # import time
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
+from models.parakeet import get_asr_model
+from models.llama import get_llm
 import librosa
 import webrtcvad
 import time
@@ -382,6 +384,18 @@ def process_full_audio(audio_state, stream_state):
             routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
             routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
             routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
+
+            if stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65:
+                if stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5:
+                    voice_emotion = "Клиент испытывает резко негативную эмоцию."
+                    if stream_state["emo_vad_result"]["emotions"]["dominance"] > 0.5:
+                        voice_emotion += " Вероятно, гнев."
+                    else:
+                        voice_emotion += " Вероятно, страх."
+                else:
+                    voice_emotion = "Клиент испытывает яркую позитивную эмоцию."
+            else:
+                voice_emotion = "Клиент достаточно спокоен."
         else:
             routing_result += "\nОшибка: эмоции не были определены."
             error = True
@@ -399,10 +413,17 @@ def process_full_audio(audio_state, stream_state):
                     stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
                 routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
 
+    full_audio = np.concatenate(audio_state["full_buffer"])
+    asr_model = get_asr_model()
+    transcription = asr_model.transcribe(full_audio, SAMPLERATE)
+    llm = get_llm()
+    llm_response = llm.get_response(transcription, voice_emotion)
+    routing_result += "\n\n" + str(llm_response)
+
     # очистка
-    audio_state["full_buffer"] = []
-    audio_state["ag_buffer"] = []
-    audio_state["emo_vad_buffer"] = []
+    # audio_state["full_buffer"] = []
+    # audio_state["ag_buffer"] = []
+    # audio_state["emo_vad_buffer"] = []
 
     return routing_result, audio_state, stream_state
 
@@ -507,3 +528,5 @@ def process_full_audio(audio_state, stream_state):
 def load_models():
     get_age_gender_predictor('model_files/age_gender_model')
     get_emotion_vad_predictor('model_files/emotion_vad_model')
+    get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
+    get_llm('model_files/llama/Llama-3.2-3B-Instruct-Q5_K_M.gguf', "cpu")
