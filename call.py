@@ -425,7 +425,7 @@ def process_full_audio(audio_state, stream_state):
     # audio_state["ag_buffer"] = []
     # audio_state["emo_vad_buffer"] = []
 
-    return routing_result, audio_state, stream_state
+    return routing_result, audio_state, stream_state, transcription
 
 
 

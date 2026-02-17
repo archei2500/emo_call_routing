@@ -91,8 +91,8 @@ class LLaMa:
                     "Смотри ТОЛЬКО на текст и на эмоцию по голосу.\n"
                     "1. emotions — только явно выраженные эмоции из списка (до 3)\n"
                     "2. topics — только те категории, которые явно есть в тексте (1–2)\n"
-                    "3. agree — совпадает ли вывод об эмоциях по голосу с текстом\n"
-                    "Отвечай ИСКЛЮЧИТЕЛЬНО валидным JSON по схеме. Никакого другого текста."
+                    "3. agree — совпадает ли вывод об эмоциях по голосу с выводом по тексту\n"
+                    "Отвечай ИСКЛЮЧИТЕЛЬНО валидным JSON по схеме. Не дублируй. Никакого другого текста."
                 )
             },
             {
@@ -107,9 +107,9 @@ class LLaMa:
 
         response = self.model.create_chat_completion(
             messages=messages,
-            response_format={"type": "json_object", "schema": self.schema, "strict": True},
+            response_format={"type": "json_object", "schema": self.schema},
             temperature=0.05,
-            max_tokens=120
+            max_tokens=80
         )
 
         try:

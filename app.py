@@ -161,7 +161,7 @@ with gr.Blocks() as demo:
     ).then(
         fn=call.process_full_audio,
         inputs=[audio_state, stream_state],
-        outputs=[routing_result, audio_state, stream_state]
+        outputs=[routing_result, audio_state, stream_state, problem_text]
     ).then(
         fn=lambda: gr.update(visible=False),
         outputs=confirm_age_btn
