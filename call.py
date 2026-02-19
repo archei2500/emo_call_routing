@@ -7,7 +7,7 @@ import numpy as np
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 from models.parakeet import get_asr_model
-from models.llama import get_llm
+from models.qwen import get_llm
 import librosa
 import webrtcvad
 import time
@@ -417,7 +417,7 @@ def process_full_audio(audio_state, stream_state):
     asr_model = get_asr_model()
     transcription = asr_model.transcribe(full_audio, SAMPLERATE)
     llm = get_llm()
-    llm_response = llm.get_response(transcription, voice_emotion)
+    llm_response = llm.get_response(transcription)
     routing_result += "\n\n" + str(llm_response)
 
     # очистка
@@ -426,7 +426,6 @@ def process_full_audio(audio_state, stream_state):
     # audio_state["emo_vad_buffer"] = []
 
     return routing_result, audio_state, stream_state, transcription
-
 
 
 # def process_full_audio(state):
@@ -529,4 +528,4 @@ def load_models():
     get_age_gender_predictor('model_files/age_gender_model')
     get_emotion_vad_predictor('model_files/emotion_vad_model')
     get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
-    get_llm('model_files/llama/Llama-3.2-3B-Instruct-Q5_K_M.gguf', "cpu")
+    get_llm('model_files/qwen/Qwen2.5-1.5B-Instruct-Q5_K_M.gguf', "cpu")
