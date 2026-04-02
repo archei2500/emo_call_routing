@@ -1,7 +1,7 @@
 import torch
 import librosa
 import numpy as np
-import onnx_asr
+import nemo.collections.asr as nemo_asr
 
 
 class Parakeet:
@@ -19,19 +19,18 @@ class Parakeet:
 
         Args:
             model_path: Путь к локальной папке с моделью или имя модели в Hugging Face Hub
-            device: Устройство ('cpu' или 'cuda')
         """
         if not self._initialized:
+            self.model_path = model_path or "nvidia/parakeet-tdt-0.6b-v3"
             if device is None:
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             else:
                 self.device = torch.device(device)
 
-            # Если передан локальный путь, загружаем оттуда, иначе с HuggingFace
-            if model_path is not None:
-                self.model = onnx_asr.load_model(model_path)
-            else:
-                self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3")
+            self.model = nemo_asr.models.ASRModel.restore_from(restore_path=self.model_path)
+
+            self.model.to(self.device)
+            self.model.eval()
 
             self._initialized = True
 
@@ -49,10 +48,11 @@ class Parakeet:
         if audio_array.ndim > 2:
             audio_array = audio_array.squeeze(0)
 
-        if audio_array.dtype != np.float32:
-            audio_array = audio_array.astype(np.float32)
+        # предсказание
+        with torch.no_grad():
+            output = self.model.transcribe(audio=audio_array, batch_size=1)
 
-        result = self.model.recognize(audio_array, sample_rate=sampling_rate)
+        result = output[0].text
 
         return result
 
@@ -67,6 +67,8 @@ class Parakeet:
         Returns:
             Строка с распознанным текстом
         """
+
+        # Загружаем аудио
         sig, sr = librosa.load(
             file_path,
             sr=target_rate,
@@ -90,7 +92,7 @@ def get_asr_model(model_path: str = None, device: str = None) -> Parakeet:
         device: Устройство ('cpu' или 'cuda')
 
     Returns:
-        Экземпляр Parakeet
+        Экземпляр LLaMa
     """
     global asr_model
     if asr_model is None:

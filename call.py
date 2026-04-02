@@ -245,55 +245,58 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
         audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=SAMPLERATE)
         sample_rate = SAMPLERATE
 
-    # проверка voice activity в чанке: дальше не работаем, если не распознан голос
-    if not is_chunk_speech(audio_array):
-        return audio_state, stream_state
+    # проверка voice activity в чанке
+    is_speech = is_chunk_speech(audio_array)
 
     # Добавляем в буферы
-    audio_state["full_buffer"].append(audio_array)
-    audio_state["emo_vad_buffer"].append(audio_array)
+    if is_speech or audio_state["full_buffer"]:
+        audio_state["full_buffer"].append(audio_array)
+    if is_speech or audio_state["emo_vad_buffer"]:
+        audio_state["emo_vad_buffer"].append(audio_array)
 
     should_run = False  # флаг для запуска фоновой обработки
 
     # оценка необходимости запуска модели предсказания пола и возраста по голосу и её запуск
     with STATE_LOCK:
         if stream_state["retry_count"] < 2:
-            audio_state["ag_buffer"].append(audio_array)
+            if is_speech or audio_state["ag_buffer"]:
+                audio_state["ag_buffer"].append(audio_array)
 
-            # total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
+            if audio_state["ag_buffer"]:
+                # total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
 
-            total_samples_needed = int(2.5 * sample_rate)
-            current_samples = 0
-            last_chunks = []  # список чанков с конца
+                total_samples_needed = int(2.5 * sample_rate)
+                current_samples = 0
+                last_chunks = []  # список чанков с конца
 
-            for chunk in reversed(audio_state["ag_buffer"]):
-                current_samples += len(chunk)
-                last_chunks.append(chunk)
-                if current_samples >= total_samples_needed:
-                    break
+                for chunk in reversed(audio_state["ag_buffer"]):
+                    current_samples += len(chunk)
+                    last_chunks.append(chunk)
+                    if current_samples >= total_samples_needed:
+                        break
 
-            total_seconds = current_samples / sample_rate
+                total_seconds = current_samples / sample_rate
 
-            if not stream_state["age_gender_processing"] and total_seconds >= 2.5:
-                # первый раз
-                if not stream_state["ag_result"]:
-                    should_run = True
-                # низкая уверенность модели
-                if (stream_state["ag_result"] and
-                        stream_state["ag_result"]["age_category"]["child_probability"] < 0.75 and
-                        stream_state["ag_result"]["gender"]["probabilities"]["female"] < 0.75 and
-                        stream_state["ag_result"]["gender"]["probabilities"]["male"] < 0.75):
-                    should_run = True
-                    stream_state["retry_count"] += 1
+                if not stream_state["age_gender_processing"] and total_seconds >= 2.5:
+                    # первый раз
+                    if not stream_state["ag_result"]:
+                        should_run = True
+                    # низкая уверенность модели
+                    if (stream_state["ag_result"] and
+                            stream_state["ag_result"]["age_category"]["child_probability"] < 0.75 and
+                            stream_state["ag_result"]["gender"]["probabilities"]["female"] < 0.75 and
+                            stream_state["ag_result"]["gender"]["probabilities"]["male"] < 0.75):
+                        should_run = True
+                        stream_state["retry_count"] += 1
 
-                if should_run:
-                    current_call_id = stream_state["call_id"]
-                    # берём только эти последние чанки (разворачиваем обратно в порядок)
-                    partial_audio = np.concatenate(last_chunks[::-1])
-                    # partial_audio = np.concatenate(audio_state["ag_buffer"])
-                    audio_snapshot = partial_audio.copy()
-                    audio_state["ag_buffer"] = []
-                    stream_state["age_gender_processing"] = True
+                    if should_run:
+                        current_call_id = stream_state["call_id"]
+                        # берём только эти последние чанки (разворачиваем обратно в порядок)
+                        partial_audio = np.concatenate(last_chunks[::-1])
+                        # partial_audio = np.concatenate(audio_state["ag_buffer"])
+                        audio_snapshot = partial_audio.copy()
+                        audio_state["ag_buffer"] = []
+                        stream_state["age_gender_processing"] = True
 
     if should_run:
         threading.Thread(
