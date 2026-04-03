@@ -1,5 +1,3 @@
-import threading
-
 import gradio as gr
 import os
 import pandas as pd
@@ -55,17 +53,21 @@ with gr.Blocks() as demo:
         recorder = gr.Audio(sources=["microphone"], streaming=True, type="numpy", visible=False, interactive=True, elem_id="recorder")
         recorder_final_text = gr.Markdown("Затем завершите запись, когда будете готовы.", visible=False)
         confirm_age_btn = gr.Button("Мне есть 18", visible=False)  # для подтверждения возраста (если распознает ребёнка)
-        audio_state = gr.State(value={"full_buffer": [], "ag_buffer": [], "emo_vad_buffer": []})  # cостояние для накопления чанков
+        audio_state = gr.State(value={"full_buffer": [], "ag_buffer": [], "ac_buffer": [], "emo_buffer": []})  # cостояние для накопления чанков
         # состояние для фоновой обработки моделями
         stream_state = gr.State(
             value={
                 "age_gender_processing": False,
-                "emotion_vad_processing": False,
+                "adult_child_processing": False,
+                "emotion_processing": False,
                 "ag_result": None,
+                "ac_result": None,
                 "retry_count": 0,
+                "child_retry_count": 0,
                 "age_trigger": False,
                 "age_confirmed": False,
                 "emo_vad_result": None,
+                "emo_result": None,
                 "call_id": 0
             }
         )
@@ -166,12 +168,12 @@ with gr.Blocks() as demo:
         fn=lambda: gr.update(visible=False),
         outputs=confirm_age_btn
     ).then(
-        fn=lambda s: {**s, "ag_result": None, "emo_vad_result": None, "retry_count": 0, "age_trigger": False,
-                      "age_confirmed": False},
+        fn=lambda s: {**s, "ag_result": None, "ac_result": None, "emo_vad_result": None, "emo_result": None,
+                      "retry_count": 0, "child_retry_count": 0, "age_trigger": False, "age_confirmed": False},
         inputs=stream_state,
         outputs=stream_state
     ).then(
-        fn=lambda s: {**s, "full_buffer": [], "ag_buffer": [], "emo_vad_buffer": []},
+        fn=lambda s: {**s, "full_buffer": [], "ag_buffer": [], "ac_buffer": [], "emo_buffer": []},
         inputs=audio_state,
         outputs=audio_state
     )

@@ -1,5 +1,4 @@
 import threading
-
 import numpy as np
 # import os
 # import soundfile as sf
@@ -7,7 +6,8 @@ import numpy as np
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 from models.parakeet import get_asr_model
-from models.qwen import get_llm
+from models.emotion_classifier import get_emotion_classifier
+from models.adult_child_detector import get_adult_child_detector
 import librosa
 import webrtcvad
 import time
@@ -25,6 +25,25 @@ vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 STATE_LOCK = threading.Lock()
 
 
+def update_trigger(stream_state):
+    ag_res = stream_state.get("ag_result")
+    ac_res = stream_state.get("ac_result")
+
+    is_child_now = False
+
+    if ag_res and ag_res["age"]["years"] < 18:
+        is_child_now = True
+    if ac_res and ac_res["predicted"] == "child":
+        is_child_now = True
+
+    # если возраст уже подтверждён, триггер не нужен
+    if stream_state.get("age_confirmed", False):
+        stream_state["age_trigger"] = False
+    else:
+        # триггер = текущее мнение "ребёнок"
+        stream_state["age_trigger"] = is_child_now
+
+
 def background_age_gender(audio_snapshot, stream_state, current_call_id):
     '''
     В фоне запускает обработку аудиофрагмента моделью, которая определяет возраст и пол человека по голосу.
@@ -39,7 +58,6 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
     new_result = model.predict(audio_snapshot, SAMPLERATE)
     with STATE_LOCK:
         if stream_state.get("call_id") == current_call_id:
-            print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
             prev_result = stream_state.get("ag_result")
 
             if prev_result is None:
@@ -50,10 +68,10 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
                 aggregated_age_years = round(100 * avg_raw_score)
 
                 # агрегация вероятностей: берём максимумы для уверенности
-                max_child_prob = max(
-                    prev_result["age_category"]["child_probability"],
-                    new_result["age_category"]["child_probability"]
-                )
+                # max_child_prob = max(
+                #     prev_result["age_category"]["child_probability"],
+                #     new_result["age_category"]["child_probability"]
+                # )
                 max_female_prob = max(
                     prev_result["gender"]["probabilities"]["female"],
                     new_result["gender"]["probabilities"]["female"]
@@ -74,26 +92,82 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
                     },
                     "predicted": "female" if max_female_prob > max_male_prob else "male"
                 }, "age_category": {
-                    "is_child": max_child_prob > 0.5 or aggregated_age_years < 18,
-                    "child_probability": max_child_prob,
-                    "is_adult": max_child_prob <= 0.5 and aggregated_age_years >= 18,
-                    "adult_probability": 1 - max_child_prob
+                    "is_child": new_result["age_category"]["is_child"],
+                    "child_probability": new_result["age_category"]["child_probability"],
+                    "is_adult": new_result["age_category"]["is_adult"],
+                    "adult_probability": new_result["age_category"]["adult_probability"]
                 }}
 
                 stream_state["ag_result"] = aggregated_result
 
             # установка триггера
-            final_result = stream_state["ag_result"]
-            if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
-                stream_state["age_trigger"] = True
+            update_trigger(stream_state)
 
-        print("После отработки модели генедра/возраста:")
-        print(stream_state)
+            # final_result = stream_state["ag_result"]
+            # if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
+            #     stream_state["age_trigger"] = True
+            # ag_res = stream_state["ag_result"]
+            # ac_res = stream_state.get("ac_result")
+            # # проверяем, что триггер ещё не включен и возраст не подтверждён
+            # if not stream_state.get("age_trigger", False):
+            #     # Модель age/gender считает, что ребёнок
+            #     if ag_res["age_category"]["is_child"]:
+            #         stream_state["age_trigger"] = True
+            #         print("Триггер включён age/gender: возраст < 18 лет")
+            #     # ИЛИ модель adult/child (если есть) тоже считает, что ребёнок
+            #     elif ac_res and ac_res["predicted"] == "child":
+            #         stream_state["age_trigger"] = True
+            #         print("Триггер включён age/gender: adult/child модель определила ребёнка")
 
         # модель свободна
         stream_state["age_gender_processing"] = False
+        print("После отработки модели генедра/возраста:")
+        print(stream_state)
 
-    print("Модель гендера/возраста отработала.")
+
+def background_child_detection(audio_snapshot, stream_state, current_call_id):
+    '''
+    В фоне запускает обработку аудиофрагмента моделью, которая по голосу определяет, взрослый это или ребёнок.
+    '''
+    with STATE_LOCK:
+        if stream_state.get("call_id") != current_call_id:
+            stream_state["adult_child_processing"] = False
+            print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
+            return
+
+    model = get_adult_child_detector()
+    new_result = model.predict(audio_snapshot, SAMPLERATE)
+
+    with STATE_LOCK:
+        if stream_state.get("call_id") == current_call_id:
+            prev_result = stream_state.get("ac_result")
+
+            if prev_result is None:
+                stream_state["ac_result"] = new_result
+            else:
+                # агрегация: берём максимум вероятностей
+                max_child_prob = max(
+                    prev_result["probabilities"]["child"],
+                    new_result["probabilities"]["child"]
+                )
+                max_adult_prob = max(
+                    prev_result["probabilities"]["adult"],
+                    new_result["probabilities"]["adult"]
+                )
+
+                stream_state["ac_result"] = {
+                    "predicted": "child" if max_child_prob > max_adult_prob else "adult",
+                    "confidence": max(max_child_prob, max_adult_prob),
+                    "probabilities": {
+                        "adult": max_adult_prob,
+                        "child": max_child_prob
+                    }
+                }
+
+            update_trigger(stream_state)
+
+        stream_state["adult_child_processing"] = False
+        print("После отработки модели child detection:", stream_state)
 
 
 def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
@@ -251,8 +325,8 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     # Добавляем в буферы
     if is_speech or audio_state["full_buffer"]:
         audio_state["full_buffer"].append(audio_array)
-    if is_speech or audio_state["emo_vad_buffer"]:
-        audio_state["emo_vad_buffer"].append(audio_array)
+    if is_speech or audio_state["emo_buffer"]:
+        audio_state["emo_buffer"].append(audio_array)
 
     should_run = False  # флаг для запуска фоновой обработки
 
@@ -263,8 +337,6 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                 audio_state["ag_buffer"].append(audio_array)
 
             if audio_state["ag_buffer"]:
-                # total_samples = sum(len(chunk) for chunk in audio_state["ag_buffer"])
-
                 total_samples_needed = int(2.5 * sample_rate)
                 current_samples = 0
                 last_chunks = []  # список чанков с конца
@@ -282,12 +354,17 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                     if not stream_state["ag_result"]:
                         should_run = True
                     # низкая уверенность модели
+                    # (включает проверку результата модели adult_child - так как уверенности female и male будут
+                    # низкими, если голос детский)
                     if (stream_state["ag_result"] and
-                            stream_state["ag_result"]["age_category"]["child_probability"] < 0.75 and
+                            (stream_state["ac_result"] is None or
+                             (stream_state["ac_result"] and stream_state["ac_result"]["child_probability"] < 0.75)) and
                             stream_state["ag_result"]["gender"]["probabilities"]["female"] < 0.75 and
                             stream_state["ag_result"]["gender"]["probabilities"]["male"] < 0.75):
                         should_run = True
                         stream_state["retry_count"] += 1
+                    elif stream_state["ag_result"]:  # высокая уверенность
+                        stream_state["retry_count"] = 2
 
                     if should_run:
                         current_call_id = stream_state["call_id"]
@@ -302,6 +379,56 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
         threading.Thread(
             target=background_age_gender,
             args=(audio_snapshot, stream_state, current_call_id),
+            daemon=True
+        ).start()
+
+    should_run = False
+
+    # оценка необходимости запуска модели детекции детей по голосу и её запуск
+    with STATE_LOCK:
+        if stream_state["child_retry_count"] < 2:
+            if is_speech or audio_state["ac_buffer"]:
+                audio_state["ac_buffer"].append(audio_array)
+
+            if audio_state["ac_buffer"]:
+                total_samples_needed = int(2.5 * sample_rate)
+                current_samples = 0
+                last_chunks = []  # список чанков с конца
+
+                for chunk in reversed(audio_state["ac_buffer"]):
+                    current_samples += len(chunk)
+                    last_chunks.append(chunk)
+                    if current_samples >= total_samples_needed:
+                        break
+
+                total_seconds = current_samples / sample_rate
+
+                if not stream_state["adult_child_processing"] and total_seconds >= 2.5:
+                    # первый раз
+                    if not stream_state["ac_result"]:
+                        should_run = True
+                    # низкая уверенность модели
+                    if (stream_state["ac_result"] and
+                            stream_state["ac_result"]["age_category"]["child_probability"] < 0.75 and
+                            stream_state["ac_result"]["age_category"]["adult_probability"] < 0.75):
+                        should_run = True
+                        stream_state["child_retry_count"] += 1
+                    elif stream_state["ac_result"]:  # высокая уверенность
+                        stream_state["child_retry_count"] = 2
+
+                    if should_run:
+                        current_call_id = stream_state["call_id"]
+                        # берём только эти последние чанки (разворачиваем обратно в порядок)
+                        partial_audio = np.concatenate(last_chunks[::-1])
+                        # partial_audio = np.concatenate(audio_state["ag_buffer"])
+                        audio_snapshot_3 = partial_audio.copy()
+                        audio_state["ac_buffer"] = []
+                        stream_state["adult_child_processing"] = True
+
+    if should_run:
+        threading.Thread(
+            target=background_child_detection,
+            args=(audio_snapshot_3, stream_state, current_call_id),
             daemon=True
         ).start()
 
@@ -419,9 +546,9 @@ def process_full_audio(audio_state, stream_state):
     full_audio = np.concatenate(audio_state["full_buffer"])
     asr_model = get_asr_model()
     transcription = asr_model.transcribe(full_audio, SAMPLERATE)
-    llm = get_llm()
-    llm_response = llm.get_response(transcription)
-    routing_result += "\n\n" + str(llm_response)
+    # llm = get_llm()
+    # llm_response = llm.get_response(transcription)
+    # routing_result += "\n\n" + str(llm_response)
 
     # очистка
     # audio_state["full_buffer"] = []
@@ -529,6 +656,8 @@ def process_full_audio(audio_state, stream_state):
 
 def load_models():
     get_age_gender_predictor('model_files/age_gender_model')
+    get_adult_child_detector('model_files/adult_child_detector')
     get_emotion_vad_predictor('model_files/emotion_vad_model')
+    get_emotion_classifier("emo", "model_files/GigaAm_emo")
     get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
-    get_llm('model_files/qwen/Qwen2.5-1.5B-Instruct-Q5_K_M.gguf', "cpu")
+    # get_llm('model_files/qwen/Qwen2.5-1.5B-Instruct-Q5_K_M.gguf', "cpu")

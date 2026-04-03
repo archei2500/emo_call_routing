@@ -27,7 +27,7 @@ class AdultChildDetector:
             else:
                 self.device = torch.device(device)
 
-            self.model_path = model_path or "anantoj/wav2vec2-adult-child-cls"
+            self.model_path = model_path or "bookbot/wav2vec2-adult-child-cls"
 
             self.processor = Wav2Vec2FeatureExtractor.from_pretrained(self.model_path)
             self.model = Wav2Vec2ForSequenceClassification.from_pretrained(self.model_path)
