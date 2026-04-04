@@ -2,7 +2,6 @@ import threading
 import numpy as np
 # import os
 # import soundfile as sf
-# import time
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 from models.parakeet import get_asr_model
@@ -24,6 +23,21 @@ VAD_AGGRESSIVENESS = 2  # 0-3
 vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 STATE_LOCK = threading.Lock()
 
+# Центроиды аффективных состояний (MSP-Podcast, масштаб [0, 1])
+# Порядок элементов: [Valence, Arousal, Dominance]
+VAD_CENTROIDS = {
+    "Angry":    [0.3328, 0.7365, 0.7433],
+    "Sad":      [0.3970, 0.4584, 0.5239],
+    "Disgust":  [0.3838, 0.5819, 0.6220],
+    "Fear":     [0.4094, 0.5675, 0.6040],
+    "Neutral":  [0.4870, 0.5029, 0.5597],
+    "Surprise": [0.4919, 0.6052, 0.6278],
+    "Happy":    [0.6200, 0.6343, 0.6539]
+}
+EMA_ALPHA = 0.35  # коэффициент забывания
+TRIGGER_ANGER = 0.12
+TRIGGER_DISTRESS = 0.20
+
 
 def update_trigger(stream_state):
     ag_res = stream_state.get("ag_result")
@@ -31,7 +45,7 @@ def update_trigger(stream_state):
 
     is_child_now = False
 
-    if ag_res and ag_res["age"]["years"] < 18:
+    if ag_res and ag_res["age"]["years"] < 14:
         is_child_now = True
     if ac_res and ac_res["predicted"] == "child":
         is_child_now = True
@@ -170,60 +184,176 @@ def background_child_detection(audio_snapshot, stream_state, current_call_id):
         print("После отработки модели child detection:", stream_state)
 
 
+def call_gigaam_sync(audio_snapshot, stream_state, current_call_id):
+    """
+    Синхронный вызов GigaAM внутри фонового потока VAD.
+    Записывает результат в stream_state["emo_result"].
+    """
+    try:
+        classifier = get_emotion_classifier()
+        result = classifier.predict(audio_snapshot)
+
+        probs = result["probabilities"]
+        predicted_class = result["predicted"]
+
+        with STATE_LOCK:
+            if stream_state.get("call_id") != current_call_id:
+                print(f"[GigaAM] Aborted: call_id mismatch")
+                return
+
+            stream_state["emo_result"] = {
+                "predicted_class": predicted_class,
+                "probs": probs
+            }
+            print(f"[GigaAM] Success: {predicted_class} | probs={probs}")
+
+    except Exception as e:
+        print(f"[GigaAM] Inference error: {e}")
+
+
+def compute_emotion_risks(vad_vec, centroids=VAD_CENTROIDS, tau=0.15, w_sad=0.80, w_fear=0.20):
+    vad_vec = np.array(vad_vec, dtype=float)
+
+    # евклидовы расстояния до центроидов
+    dists = {emo: np.linalg.norm(vad_vec - np.array(cent))
+             for emo, cent in centroids.items()}
+
+    # softmax от отрицательных расстояний
+    logits = {emo: -d / tau for emo, d in dists.items()}
+    max_logit = max(logits.values())
+    exp_vals = {emo: np.exp(log - max_logit) for emo, log in logits.items()}
+    sum_exp = sum(exp_vals.values())
+    probs = {emo: e / sum_exp for emo, e in exp_vals.items()}
+
+    # агрегация в риски
+    anger_risk = probs["Angry"]
+    distress_risk = w_sad * probs["Sad"] + w_fear * probs["Fear"]
+
+    return anger_risk, distress_risk, probs
+
+
 def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
     '''
-        В фоне запускает обработку аудиофрагмента моделью, которая определяет непрерывные измерения эмоций по голосу.
-        Итоговый результат будет сохранён в stream_state.
+    В фоне запускает обработку аудиофрагмента моделью VAD.
+    Итоговый результат сохраняется в stream_state.
     '''
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["emotion_vad_processing"] = False
             print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
             return
+
     model = get_emotion_vad_predictor()
     new_result = model.predict(audio_snapshot, SAMPLERATE)
-    print(new_result)
+
     with STATE_LOCK:
-        if stream_state.get("call_id") == current_call_id:
-            print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
-            prev_result = stream_state.get("emo_vad_result")
-            if prev_result is None:
-                # первый запуск: просто присваиваем
-                stream_state["emo_vad_result"] = new_result
-            else:
-                aggregated_emotions = {"arousal": max(
-                    prev_result["emotions"]["arousal"],
-                    new_result["emotions"]["arousal"]
-                )}
+        if stream_state.get("call_id") != current_call_id:
+            stream_state["emotion_vad_processing"] = False
+            return
 
-                # dominance и valence — min/max по полусфере
-                for dim in ["dominance", "valence"]:
-                    p = prev_result["emotions"][dim]
-                    n = new_result["emotions"][dim]
+        if stream_state.get("emo_vad_result") is None:
+            stream_state["emo_vad_result"] = {}
 
-                    if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
-                        aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
-                    else:
-                        aggregated_emotions[dim] = (p + n) / 2
+        prev_result = stream_state["emo_vad_result"]
+        new_vec = [
+            new_result["emotions"]["valence"],
+            new_result["emotions"]["arousal"],
+            new_result["emotions"]["dominance"]
+        ]
 
-                aggregated_result = {
-                    "raw_predictions": [
-                        aggregated_emotions["arousal"],
-                        aggregated_emotions["dominance"],
-                        aggregated_emotions["valence"]
-                    ],
-                    "emotions": aggregated_emotions
-                }
+        prev_vec = prev_result.get("vector")
+        if prev_vec is None:
+            # первый вызов: просто сохраняем вектор
+            stream_state["emo_vad_result"]["vector"] = new_vec
+        else:
+            # EMA-сглаживание
+            smoothed_vec = [
+                EMA_ALPHA * n + (1.0 - EMA_ALPHA) * p
+                for n, p in zip(new_vec, prev_vec)
+            ]
+            stream_state["emo_vad_result"]["vector"] = smoothed_vec
 
-                stream_state["emo_vad_result"] = aggregated_result
+        # вычисляем риски по текущему вектору
+        anger_risk, distress_risk, _ = compute_emotion_risks(
+            vad_vec=stream_state["emo_vad_result"]["vector"]
+        )
+        stream_state["emo_vad_result"]["risks"] = {
+            "anger": anger_risk,
+            "distress": distress_risk
+        }
 
-        print("После отработки модели эмоций:")
-        print(stream_state)
+        prev_giga = stream_state.get("emo_result")
+        prev_class = prev_giga.get("predicted_class") if prev_giga else None
 
-        # модель свободна
+        should_call = False
+        if anger_risk > TRIGGER_ANGER and prev_class != "angry":
+            should_call = True
+        elif distress_risk > TRIGGER_DISTRESS and prev_class != "sad":
+            should_call = True
+
         stream_state["emotion_vad_processing"] = False
 
-    print("Модель эмоций отработала.")
+    if should_call:
+        print(f"[TRIGGER GigaAM] prev={prev_class} | anger={anger_risk:.2f}, distress={distress_risk:.2f}")
+        call_gigaam_sync(audio_snapshot, stream_state, current_call_id)
+    else:
+        print(f"[SKIP GigaAM] confirmed/stable: prev={prev_class}")
+
+
+# def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
+#     '''
+#         В фоне запускает обработку аудиофрагмента моделью, которая определяет непрерывные измерения эмоций по голосу.
+#         Итоговый результат будет сохранён в stream_state.
+#     '''
+#     with STATE_LOCK:
+#         if stream_state.get("call_id") != current_call_id:
+#             stream_state["emotion_vad_processing"] = False
+#             print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
+#             return
+#     model = get_emotion_vad_predictor()
+#     new_result = model.predict(audio_snapshot, SAMPLERATE)
+#     print(new_result)
+#     with STATE_LOCK:
+#         if stream_state.get("call_id") == current_call_id:
+#             print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
+#             prev_result = stream_state.get("emo_vad_result")
+#             if prev_result is None:
+#                 # первый запуск: просто присваиваем
+#                 stream_state["emo_vad_result"] = new_result
+#             else:
+#                 aggregated_emotions = {"arousal": max(
+#                     prev_result["emotions"]["arousal"],
+#                     new_result["emotions"]["arousal"]
+#                 )}
+#
+#                 # dominance и valence — min/max по полусфере
+#                 for dim in ["dominance", "valence"]:
+#                     p = prev_result["emotions"][dim]
+#                     n = new_result["emotions"][dim]
+#
+#                     if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
+#                         aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
+#                     else:
+#                         aggregated_emotions[dim] = (p + n) / 2
+#
+#                 aggregated_result = {
+#                     "raw_predictions": [
+#                         aggregated_emotions["arousal"],
+#                         aggregated_emotions["dominance"],
+#                         aggregated_emotions["valence"]
+#                     ],
+#                     "emotions": aggregated_emotions
+#                 }
+#
+#                 stream_state["emo_vad_result"] = aggregated_result
+#
+#         print("После отработки модели эмоций:")
+#         print(stream_state)
+#
+#         # модель свободна
+#         stream_state["emotion_vad_processing"] = False
+#
+#     print("Модель эмоций отработала.")
 
 
 def is_chunk_speech(audio_array: np.ndarray, sample_rate: int = SAMPLERATE) -> bool:
