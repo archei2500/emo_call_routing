@@ -59,7 +59,8 @@ with gr.Blocks() as demo:
             value={
                 "age_gender_processing": False,
                 "adult_child_processing": False,
-                "emotion_processing": False,
+                "emotion_vad_processing": False,
+                "gigaam_processing": False,
                 "ag_result": None,
                 "ac_result": None,
                 "retry_count": 0,

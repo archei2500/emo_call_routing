@@ -7,6 +7,8 @@ from models.emotion_vad_predictor import get_emotion_vad_predictor
 from models.parakeet import get_asr_model
 from models.emotion_classifier import get_emotion_classifier
 from models.adult_child_detector import get_adult_child_detector
+from models.intent_classifier import get_intent_classifier
+from models.semantic_emotion_classifier import get_semantic_emotion_classifier
 import librosa
 import webrtcvad
 import time
@@ -206,9 +208,11 @@ def call_gigaam_sync(audio_snapshot, stream_state, current_call_id):
                 "probs": probs
             }
             print(f"[GigaAM] Success: {predicted_class} | probs={probs}")
-
     except Exception as e:
         print(f"[GigaAM] Inference error: {e}")
+    finally:
+        with STATE_LOCK:
+            stream_state["gigaam_processing"] = False
 
 
 def compute_emotion_risks(vad_vec, centroids=VAD_CENTROIDS, tau=0.15, w_sad=0.80, w_fear=0.20):
@@ -291,11 +295,20 @@ def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
         elif distress_risk > TRIGGER_DISTRESS and prev_class != "sad":
             should_call = True
 
+        gigaam_busy = stream_state.get("gigaam_processing", False)
+
         stream_state["emotion_vad_processing"] = False
 
-    if should_call:
-        print(f"[TRIGGER GigaAM] prev={prev_class} | anger={anger_risk:.2f}, distress={distress_risk:.2f}")
-        call_gigaam_sync(audio_snapshot, stream_state, current_call_id)
+    if should_call and not gigaam_busy:
+        with STATE_LOCK:
+            if not stream_state.get("gigaam_processing", False):
+                stream_state["gigaam_processing"] = True
+                should_call_atomic = True
+            else:
+                should_call_atomic = False
+        if should_call_atomic:
+            print(f"[TRIGGER GigaAM] prev={prev_class} | anger={anger_risk:.2f}, distress={distress_risk:.2f}")
+            call_gigaam_sync(audio_snapshot, stream_state, current_call_id)
     else:
         print(f"[SKIP GigaAM] confirmed/stable: prev={prev_class}")
 
@@ -567,7 +580,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
     # оценка необходимости (накоплено достаточно чанков) запуска модели предсказания эмоции по голосу и её запуск
     with STATE_LOCK:
         if audio_state["emo_vad_buffer"]:
-            total_samples_needed = int(3 * sample_rate)
+            total_samples_needed = int(3.5 * sample_rate)
             current_samples = 0
             last_chunks = []  # список чанков с конца
 
@@ -785,9 +798,29 @@ def process_full_audio(audio_state, stream_state):
 
 
 def load_models():
-    get_age_gender_predictor('model_files/age_gender_model')
-    get_adult_child_detector('model_files/adult_child_detector')
-    get_emotion_vad_predictor('model_files/emotion_vad_model')
-    get_emotion_classifier("emo", "model_files/GigaAm_emo")
-    get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
+    age_gender = get_age_gender_predictor('model_files/age_gender_model')
+    adult_child = get_adult_child_detector('model_files/adult_child_detector')
+    emotion_vad = get_emotion_vad_predictor('model_files/emotion_vad_model')
+    emotion_classifier = get_emotion_classifier("emo", "model_files/GigaAm_emo")
+    asr_model = get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
+    intent_classifier = get_intent_classifier('model_files/rubert_tiny_intent')
+    semantic_emotion = get_semantic_emotion_classifier('model_files/semantic_emotion_classifier')
     # get_llm('model_files/qwen/Qwen2.5-1.5B-Instruct-Q5_K_M.gguf', "cpu")
+
+    print("Прогрев моделей...")
+    print("  Прогрев ASR...")
+    asr_model.transcribe_from_file(welcome_audio_path)
+    print("  Прогрев Age/Gender...")
+    age_gender.predict_from_file(welcome_audio_path)
+    print("  Прогрев Adult/Child...")
+    adult_child.predict_from_file(welcome_audio_path)
+    print("  Прогрев Emotion VAD...")
+    emotion_vad.predict_from_file(welcome_audio_path)
+    print("  Прогрев Emotion Classifier...")
+    emotion_classifier.predict_from_file(welcome_audio_path)
+    default_text = "Здравствуйте, у меня проблема с картой"
+    print("  Прогрев Intent Classifier...")
+    intent_classifier.predict(default_text)
+    print("  Прогрев Semantic Emotion Classifier...")
+    semantic_emotion.predict(default_text)
+    print("Все модели загружены и прогреты!")
