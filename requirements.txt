@@ -3,5 +3,5 @@ pandas
 numpy
 librosa
 webrtcvad
-transformers==4.57.6
+transformers==4.44.2
 onnx-asr[cpu,hub]

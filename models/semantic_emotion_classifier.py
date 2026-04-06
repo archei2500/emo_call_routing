@@ -74,14 +74,14 @@ class SemanticEmotionClassifier:
 
         # Формируем словарь вероятностей для всех эмоций
         all_probabilities = {
-            self.id2label[str(i)]: float(probabilities[i])
+            self.id2label[i]: float(probabilities[i])
             for i in range(len(probabilities))
         }
 
         # Выбираем эмоции с вероятностью > 0.5 (включая neutral/no_emotion)
         threshold = 0.5
         detected_emotions = [
-            {"emotion": self.id2label[str(i)], "probability": float(probabilities[i])}
+            {"emotion": self.id2label[i], "probability": float(probabilities[i])}
             for i in range(len(probabilities))
             if probabilities[i] > threshold
         ]
