@@ -52,7 +52,7 @@ with gr.Blocks() as demo:
         recorder_text = gr.Markdown("Нажмите на кнопку записи, чтобы описать проблему устно.", visible=False)
         recorder = gr.Audio(sources=["microphone"], streaming=True, type="numpy", visible=False, interactive=True, elem_id="recorder")
         recorder_final_text = gr.Markdown("Затем завершите запись, когда будете готовы.", visible=False)
-        confirm_age_btn = gr.Button("Мне есть 18", visible=False)  # для подтверждения возраста (если распознает ребёнка)
+        confirm_age_btn = gr.Button("Мне есть 14", visible=False)  # для подтверждения возраста (если распознает ребёнка)
         audio_state = gr.State(value={"full_buffer": [], "ag_buffer": [], "ac_buffer": [], "emo_buffer": []})  # cостояние для накопления чанков
         # состояние для фоновой обработки моделями
         stream_state = gr.State(
