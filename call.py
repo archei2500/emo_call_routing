@@ -612,93 +612,148 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
 
 
 def process_full_audio(audio_state, stream_state):
-    print("Что у нас тут такое?")
-    print(stream_state)
-
-    max_wait_seconds = 8.0  # максимум ждём 8 секунд
+    max_wait_seconds = 5.0  # максимум ждём 5 секунд
     sleep_interval = 0.2  # проверяем каждые 200 мс
-
     waited = 0.0
     while waited < max_wait_seconds:
         with STATE_LOCK:
-            age_done = not stream_state["age_gender_processing"] or stream_state["ag_result"] is not None
-            emo_done = not stream_state["emotion_vad_processing"] or stream_state["emo_vad_result"] is not None
-        if age_done and emo_done:
+            age_done = not stream_state.get("age_gender_processing", False)
+            emo_done = not stream_state.get("emotion_vad_processing", False)
+            age_has_result = stream_state.get("ag_result") is not None
+            emo_has_result = (stream_state.get("emo_vad_result") is not None)
+        if (age_done and emo_done) and (age_has_result or emo_has_result):
             break
         time.sleep(sleep_interval)
         waited += sleep_interval
 
-    if waited >= max_wait_seconds:
-        print(f"Warning: время ожидания результатов истекло после {waited:.1f} сек")
-
-    error = False
-
+    routing_mode = 0  # полноценная маршрутизация (1 - без эмоций, 2 - без демографии, 3 - только по тексту)
     with STATE_LOCK:
-        if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
-            routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
-            audio_state["full_buffer"] = []
-            audio_state["ag_buffer"] = []
-            audio_state["emo_vad_buffer"] = []
-            return routing_result, audio_state, stream_state
-
-        if stream_state["ag_result"]:
-            routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
-            routing_result += "\nПол: "
-            if stream_state["ag_result"]["gender"]["predicted"] == "male":
-                routing_result += "мужской"
-            else:
-                routing_result += "женский"
+        final_emo = stream_state.get("emo_vad_result")
+        final_age = stream_state.get("ag_result")
+    if waited >= max_wait_seconds:
+        print(f"[TIMEOUT] Ожидание прервано после {waited:.1f} сек. Используем fallback-маршрутизацию.")
+    if final_emo is None or not final_emo.get("risks"):
+        print("[FALLBACK] VAD-риски отсутствуют → маршрутизация по умолчанию / только по тексту")
+        routing_mode = 1
+    if not final_age:
+        print("[FALLBACK] Age/Gender отсутствуют → игнорируем демографический фильтр")
+        if routing_mode == 0:
+            routing_mode = 2
         else:
-            routing_result = "Ошибка: демографические признаки не были определены."
-            error = True
+            routing_mode = 3
 
-        if stream_state["emo_vad_result"]:
-            routing_result += "\nЭмоциональное состояние:"
-            routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
-            routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
-            routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
+    if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
+        routing_result = "Вы не подтвердили, что вам больше 14 лет, поэтому мы не можем обработать ваш запрос."
+        return routing_result, audio_state, stream_state
 
-            if stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65:
-                if stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5:
-                    voice_emotion = "Клиент испытывает резко негативную эмоцию."
-                    if stream_state["emo_vad_result"]["emotions"]["dominance"] > 0.5:
-                        voice_emotion += " Вероятно, гнев."
-                    else:
-                        voice_emotion += " Вероятно, страх."
-                else:
-                    voice_emotion = "Клиент испытывает яркую позитивную эмоцию."
-            else:
-                voice_emotion = "Клиент достаточно спокоен."
-        else:
-            routing_result += "\nОшибка: эмоции не были определены."
-            error = True
+    if audio_state["full_buffer"]:
+        # распознавание речи
+        full_audio = np.concatenate(audio_state["full_buffer"])
+        asr_model = get_asr_model()
+        transcription = asr_model.transcribe(full_audio, SAMPLERATE)
+        # определение темы обращения
+        intent_classifier = get_intent_classifier()
+        intent_result = intent_classifier.predict(transcription)
+        # определение эмоции по тексту
+        semantic_emotion_classifier = get_semantic_emotion_classifier()
+        emotion_result = semantic_emotion_classifier.predict(transcription)
+        # TODO: вызов функции маршрутизации
+    else:
+        print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
+        return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state
 
-        routing_result += "\n\nРекомендации:"
 
-        if not error:
-            if stream_state["ag_result"]["age"]["years"] >= 60:
-                routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
-            if stream_state["ag_result"]["gender"]["predicted"] == "male":
-                routing_result += "\nСпециалист-мужчина."
-            elif stream_state["ag_result"]["gender"]["predicted"] == "female":
-                routing_result += "\nСпециалист-женщина."
-            if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
-                    stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
-                routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
+    # return routing_result, audio_state, stream_state, transcription
 
-    full_audio = np.concatenate(audio_state["full_buffer"])
-    asr_model = get_asr_model()
-    transcription = asr_model.transcribe(full_audio, SAMPLERATE)
-    # llm = get_llm()
-    # llm_response = llm.get_response(transcription)
-    # routing_result += "\n\n" + str(llm_response)
 
-    # очистка
-    # audio_state["full_buffer"] = []
-    # audio_state["ag_buffer"] = []
-    # audio_state["emo_vad_buffer"] = []
-
-    return routing_result, audio_state, stream_state, transcription
+# def process_full_audio(audio_state, stream_state):
+#     print("Что у нас тут такое?")
+#     print(stream_state)
+#
+#     max_wait_seconds = 8.0  # максимум ждём 8 секунд
+#     sleep_interval = 0.2  # проверяем каждые 200 мс
+#
+#     waited = 0.0
+#     while waited < max_wait_seconds:
+#         with STATE_LOCK:
+#             age_done = not stream_state["age_gender_processing"] or stream_state["ag_result"] is not None
+#             emo_done = not stream_state["emotion_vad_processing"] or stream_state["emo_vad_result"] is not None
+#         if age_done and emo_done:
+#             break
+#         time.sleep(sleep_interval)
+#         waited += sleep_interval
+#
+#     if waited >= max_wait_seconds:
+#         print(f"Warning: время ожидания результатов истекло после {waited:.1f} сек")
+#
+#     error = False
+#
+#     with STATE_LOCK:
+#         if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
+#             routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
+#             audio_state["full_buffer"] = []
+#             audio_state["ag_buffer"] = []
+#             audio_state["emo_vad_buffer"] = []
+#             return routing_result, audio_state, stream_state
+#
+#         if stream_state["ag_result"]:
+#             routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
+#             routing_result += "\nПол: "
+#             if stream_state["ag_result"]["gender"]["predicted"] == "male":
+#                 routing_result += "мужской"
+#             else:
+#                 routing_result += "женский"
+#         else:
+#             routing_result = "Ошибка: демографические признаки не были определены."
+#             error = True
+#
+#         if stream_state["emo_vad_result"]:
+#             routing_result += "\nЭмоциональное состояние:"
+#             routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
+#             routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
+#             routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
+#
+#             if stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65:
+#                 if stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5:
+#                     voice_emotion = "Клиент испытывает резко негативную эмоцию."
+#                     if stream_state["emo_vad_result"]["emotions"]["dominance"] > 0.5:
+#                         voice_emotion += " Вероятно, гнев."
+#                     else:
+#                         voice_emotion += " Вероятно, страх."
+#                 else:
+#                     voice_emotion = "Клиент испытывает яркую позитивную эмоцию."
+#             else:
+#                 voice_emotion = "Клиент достаточно спокоен."
+#         else:
+#             routing_result += "\nОшибка: эмоции не были определены."
+#             error = True
+#
+#         routing_result += "\n\nРекомендации:"
+#
+#         if not error:
+#             if stream_state["ag_result"]["age"]["years"] >= 60:
+#                 routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
+#             if stream_state["ag_result"]["gender"]["predicted"] == "male":
+#                 routing_result += "\nСпециалист-мужчина."
+#             elif stream_state["ag_result"]["gender"]["predicted"] == "female":
+#                 routing_result += "\nСпециалист-женщина."
+#             if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
+#                     stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
+#                 routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
+#
+#     full_audio = np.concatenate(audio_state["full_buffer"])
+#     asr_model = get_asr_model()
+#     transcription = asr_model.transcribe(full_audio, SAMPLERATE)
+#     # llm = get_llm()
+#     # llm_response = llm.get_response(transcription)
+#     # routing_result += "\n\n" + str(llm_response)
+#
+#     # очистка
+#     # audio_state["full_buffer"] = []
+#     # audio_state["ag_buffer"] = []
+#     # audio_state["emo_vad_buffer"] = []
+#
+#     return routing_result, audio_state, stream_state, transcription
 
 
 # def process_full_audio(state):

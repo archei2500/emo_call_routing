@@ -140,7 +140,7 @@ with gr.Blocks() as demo:
         inputs=stream_state,
         outputs=confirm_age_btn
     )
-    # и скрываем её, если возраст 18+ подтвердили
+    # и скрываем её, если возраст 14+ подтвердили
     confirm_age_btn.click(
         fn=confirm_age,
         inputs=stream_state,
