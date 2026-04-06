@@ -2,9 +2,6 @@ import gradio as gr
 import os
 import pandas as pd
 import call
-# import iso639
-# import torch
-# import importlib
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-user'
 os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
 

@@ -1,7 +1,5 @@
 import threading
 import numpy as np
-# import os
-# import soundfile as sf
 from models.age_gender_predictor import get_age_gender_predictor
 from models.emotion_vad_predictor import get_emotion_vad_predictor
 from models.parakeet import get_asr_model
@@ -658,6 +656,9 @@ def process_full_audio(audio_state, stream_state):
         semantic_emotion_classifier = get_semantic_emotion_classifier()
         emotion_result = semantic_emotion_classifier.predict(transcription)
         # TODO: вызов функции маршрутизации
+        print(stream_state)
+        print(intent_result)
+        print(emotion_result)
     else:
         print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
         return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state

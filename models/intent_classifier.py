@@ -29,8 +29,8 @@ class IntentClassifier:
             self.model_path = model_path or "model_files/rubert_tiny_intent"
 
             # Загружаем токенизатор и модель
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_path)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
+            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_path, local_files_only=True)
             self.model = self.model.to(self.device)
             self.model.eval()
 
