@@ -499,7 +499,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                     # низкими, если голос детский)
                     if (stream_state["ag_result"] and
                             (stream_state["ac_result"] is None or
-                             (stream_state["ac_result"] and stream_state["ac_result"]["child_probability"] < 0.75)) and
+                             (stream_state["ac_result"] and stream_state["ac_result"]["probabilities"]["child"] < 0.75)) and
                             stream_state["ag_result"]["gender"]["probabilities"]["female"] < 0.75 and
                             stream_state["ag_result"]["gender"]["probabilities"]["male"] < 0.75):
                         should_run = True
