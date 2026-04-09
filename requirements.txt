@@ -2,6 +2,7 @@ gradio
 pandas
 numpy
 librosa
+soundfile
 webrtcvad
 transformers==4.44.2
 onnx-asr[cpu,hub]

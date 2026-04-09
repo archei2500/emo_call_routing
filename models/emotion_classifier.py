@@ -1,5 +1,8 @@
 import torch
 import gigaam
+import tempfile
+import soundfile as sf
+import numpy as np
 
 
 class EmotionClassifier:
@@ -50,7 +53,21 @@ class EmotionClassifier:
         Returns:
             Словарь с вероятностями эмоций (angry, sad, neutral, positive)
         """
-        emotion2prob = self.model.get_probs(audio_array)
+        # Если передан numpy-массив, сохраняем во временный файл
+        if isinstance(audio_array, np.ndarray):
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                temp_path = tmp_file.name
+            # Сохраняем массив как wav-файл (предполагается частота 16000 Гц)
+            sf.write(temp_path, audio_array, 16000)
+            result = self.model.get_probs(temp_path)
+            # Удаляем временный файл
+            import os
+            os.unlink(temp_path)
+        else:
+            # Если передан путь к файлу (строка)
+            result = self.model.get_probs(audio_array)
+
+        emotion2prob = result  # get_probs уже возвращает словарь
 
         result = {
             "probabilities": emotion2prob,

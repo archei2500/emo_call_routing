@@ -550,8 +550,8 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                         should_run = True
                     # низкая уверенность модели
                     if (stream_state["ac_result"] and
-                            stream_state["ac_result"]["age_category"]["child_probability"] < 0.75 and
-                            stream_state["ac_result"]["age_category"]["adult_probability"] < 0.75):
+                            stream_state["ac_result"]["probabilities"]["child"] < 0.75 and
+                            stream_state["ac_result"]["probabilities"]["adult"] < 0.75):
                         should_run = True
                         stream_state["child_retry_count"] += 1
                     elif stream_state["ac_result"]:  # высокая уверенность
@@ -577,12 +577,12 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
 
     # оценка необходимости (накоплено достаточно чанков) запуска модели предсказания эмоции по голосу и её запуск
     with STATE_LOCK:
-        if audio_state["emo_vad_buffer"]:
+        if audio_state["emo_buffer"]:
             total_samples_needed = int(3.5 * sample_rate)
             current_samples = 0
             last_chunks = []  # список чанков с конца
 
-            for chunk in reversed(audio_state["emo_vad_buffer"]):
+            for chunk in reversed(audio_state["emo_buffer"]):
                 current_samples += len(chunk)
                 last_chunks.append(chunk)
                 if current_samples >= total_samples_needed:
@@ -595,7 +595,7 @@ def process_partial_chunk(audio_data, audio_state, stream_state):
                 # partial_audio = np.concatenate(audio_state["emo_vad_buffer"])
                 partial_audio = np.concatenate(last_chunks[::-1])
                 audio_snapshot_2 = partial_audio.copy()
-                audio_state["emo_vad_buffer"] = []
+                audio_state["emo_buffer"] = []
                 stream_state["emotion_vad_processing"] = True
                 current_call_id = stream_state["call_id"]
 
@@ -642,7 +642,7 @@ def process_full_audio(audio_state, stream_state):
 
     if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
         routing_result = "Вы не подтвердили, что вам больше 14 лет, поэтому мы не можем обработать ваш запрос."
-        return routing_result, audio_state, stream_state
+        return routing_result, audio_state, stream_state, "-"
 
     if audio_state["full_buffer"]:
         # распознавание речи
@@ -659,9 +659,10 @@ def process_full_audio(audio_state, stream_state):
         print(stream_state)
         print(intent_result)
         print(emotion_result)
+        return str(stream_state), audio_state, stream_state, transcription
     else:
         print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
-        return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state
+        return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state, "-"
 
 
     # return routing_result, audio_state, stream_state, transcription
