@@ -2,15 +2,37 @@ import gradio as gr
 import os
 import pandas as pd
 import call
+from database import ContactCenterDB
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-user'
 os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
 
 
-initial_df = pd.DataFrame({
-    "Имя": ["Анна", "Борис", "Кирилл"],
-    "Возраст": [28, 34, 25],
-    "Город": ["Москва", "Санкт-Петербург", "Казань"]
-})
+# initial_df = pd.DataFrame({
+#     "Имя": ["Анна", "Борис", "Кирилл"],
+#     "Возраст": [28, 34, 25],
+#     "Город": ["Москва", "Санкт-Петербург", "Казань"]
+# })
+
+def load_operators_dataframe():
+    with ContactCenterDB() as db:
+        operators = db.get_all_operators()
+        columns = [
+            'operator_id',
+            'full_name',
+            'birth_date',
+            'start_date',
+            'patience_level',
+            'stress_resistance_level',
+            'empathy_level',
+            'shift_template_id',
+            'is_available'
+        ]
+        df = pd.DataFrame(operators, columns=columns)
+        df['status'] = df['is_available'].map({True: '✅ Доступен', False: '❌ Занят'})
+        return df
+
+
+initial_df = load_operators_dataframe()
 
 
 def update_visibility():
