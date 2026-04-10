@@ -19,16 +19,23 @@ def load_operators_dataframe():
         columns = [
             'operator_id',
             'full_name',
+            'gender',
             'birth_date',
             'start_date',
             'patience_level',
             'stress_resistance_level',
             'empathy_level',
             'shift_template_id',
-            'is_available'
+            'is_available',
+            'is_generalist'
         ]
         df = pd.DataFrame(operators, columns=columns)
-        df['status'] = df['is_available'].map({True: '✅ Доступен', False: '❌ Занят'})
+
+        # Читаемые статусы
+        df['status'] = df['is_available'].map({True: 'Доступен', False: 'Занят'})
+        df['generalist'] = df['is_generalist'].map({True: 'Да', False: 'Нет'})
+        df['gender_ru'] = df['gender'].map({'M': 'М', 'F': 'Ж'})
+
         return df
 
 

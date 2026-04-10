@@ -1,5 +1,6 @@
 import psycopg2
 from db_config import DB_CONFIG
+from datetime import datetime
 
 
 class ContactCenterDB:
@@ -38,9 +39,9 @@ class ContactCenterDB:
         """Получить всех операторов"""
         self.cursor.execute("""
             SELECT 
-                id, full_name, birth_date, start_date,
+                id, full_name, gender, birth_date, start_date,
                 patience_level, stress_resistance_level, empathy_level,
-                shift_template_id, is_available
+                shift_template_id, is_available, is_generalist
             FROM operators
             ORDER BY id
         """)
@@ -50,9 +51,9 @@ class ContactCenterDB:
         """Получить оператора по ID"""
         self.cursor.execute("""
             SELECT 
-                id, full_name, birth_date, start_date,
+                id, full_name, gender, birth_date, start_date,
                 patience_level, stress_resistance_level, empathy_level,
-                shift_template_id, is_available
+                shift_template_id, is_available, is_generalist
             FROM operators 
             WHERE id = %s
         """, (operator_id,))
@@ -62,24 +63,154 @@ class ContactCenterDB:
         """Получить только доступных операторов"""
         self.cursor.execute("""
             SELECT 
-                id, full_name, shift_template_id
+                id, full_name, gender, shift_template_id, is_generalist
             FROM operators
             WHERE is_available = TRUE
             ORDER BY id
         """)
         return self.cursor.fetchall()
 
-    def add_operator(self, full_name, birth_date, start_date,
-                     patience, stress, empathy, shift_id, is_available=True):
+    def get_generalists(self, only_available=True):
+        """
+        Получить операторов-универсалов.
+
+        Параметры:
+            only_available (bool): если True — только доступные
+        """
+        query = """
+            SELECT 
+                id, full_name, gender,
+                patience_level, stress_resistance_level, empathy_level,
+                shift_template_id, is_available
+            FROM operators
+            WHERE is_generalist = TRUE
+        """
+        if only_available:
+            query += " AND is_available = TRUE"
+        query += " ORDER BY id"
+
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
+
+    def get_available_generalists(self):
+        """Получить доступных универсалов"""
+        query = """
+            SELECT 
+                id, 
+                full_name,
+                gender,
+                patience_level,
+                stress_resistance_level,
+                empathy_level,
+                shift_template_id
+            FROM operators
+            WHERE is_available = TRUE 
+                AND is_generalist = TRUE
+            ORDER BY patience_level DESC, stress_resistance_level DESC
+        """
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
+
+    def get_available_operators_by_intent(self, intent_code):
+        """
+        Получить доступных операторов, у которых есть указанная специализация
+        """
+        query = """
+            SELECT 
+                o.id, 
+                o.full_name,
+                o.gender,
+                o.patience_level,
+                o.stress_resistance_level,
+                o.empathy_level,
+                os.proficiency_level,
+                os.is_primary,
+                o.shift_template_id
+            FROM operators o
+            JOIN operator_specializations os ON o.id = os.operator_id
+            JOIN specializations s ON os.specialization_id = s.id
+            WHERE o.is_available = TRUE 
+                AND s.intent_code = %s
+            ORDER BY os.is_primary DESC, os.proficiency_level DESC, o.id
+        """
+        self.cursor.execute(query, (intent_code,))
+        return self.cursor.fetchall()
+
+    def get_available_on_shift_operators_by_intent(self, intent_code):
+        current_time = datetime.now().time()
+
+        query = """
+            SELECT 
+                o.id, 
+                o.full_name,
+                o.gender,
+                o.birth_date,
+                o.start_date,
+                o.patience_level,
+                o.stress_resistance_level,
+                o.empathy_level,
+                os.proficiency_level,
+                os.is_primary,
+                o.shift_template_id,
+                st.start_time,
+                st.end_time,
+                s.name as specialization_name
+            FROM operators o
+            JOIN operator_specializations os ON o.id = os.operator_id
+            JOIN specializations s ON os.specialization_id = s.id
+            JOIN shift_templates st ON o.shift_template_id = st.id
+            WHERE o.is_available = TRUE 
+                AND s.intent_code = %s
+                AND st.start_time <= %s
+                AND st.end_time >= %s
+            ORDER BY os.is_primary DESC, os.proficiency_level DESC, o.id
+        """
+        self.cursor.execute(query, (intent_code, current_time, current_time))
+        return self.cursor.fetchall()
+
+    def get_available_on_shift_generalists(self):
+        current_time = datetime.now().time()
+
+        query = """
+            SELECT 
+                o.id, 
+                o.full_name,
+                o.gender,
+                o.birth_date,
+                o.start_date,
+                o.patience_level,
+                o.stress_resistance_level,
+                o.empathy_level,
+                NULL as proficiency_level,
+                FALSE as is_primary,
+                o.shift_template_id,
+                st.start_time,
+                st.end_time,
+                NULL as specialization_name
+            FROM operators o
+            JOIN shift_templates st ON o.shift_template_id = st.id
+            WHERE o.is_available = TRUE 
+                AND o.is_generalist = TRUE
+                AND st.start_time <= %s
+                AND st.end_time >= %s
+            ORDER BY o.patience_level DESC, o.stress_resistance_level DESC
+        """
+        self.cursor.execute(query, (current_time, current_time))
+        return self.cursor.fetchall()
+
+    def add_operator(self, full_name, gender, birth_date, start_date,
+                     patience, stress, empathy, shift_id,
+                     is_available=True, is_generalist=False):
         """Добавить оператора"""
         self.cursor.execute("""
             INSERT INTO operators 
-            (full_name, birth_date, start_date, patience_level,
-             stress_resistance_level, empathy_level, shift_template_id, is_available)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (full_name, gender, birth_date, start_date, patience_level,
+             stress_resistance_level, empathy_level, shift_template_id, 
+             is_available, is_generalist)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (full_name, birth_date, start_date,
-              patience, stress, empathy, shift_id, is_available))
+        """, (full_name, gender, birth_date, start_date,
+              patience, stress, empathy, shift_id, is_available, is_generalist))
         self.conn.commit()
         return self.cursor.fetchone()[0]
 
@@ -90,6 +221,16 @@ class ContactCenterDB:
             SET is_available = %s 
             WHERE id = %s
         """, (is_available, operator_id))
+        self.conn.commit()
+        return self.cursor.rowcount
+
+    def update_generalist(self, operator_id, is_generalist):
+        """Обновить статус универсала"""
+        self.cursor.execute("""
+            UPDATE operators 
+            SET is_generalist = %s 
+            WHERE id = %s
+        """, (is_generalist, operator_id))
         self.conn.commit()
         return self.cursor.rowcount
 
@@ -133,12 +274,30 @@ class ContactCenterDB:
     def get_operators_by_shift(self, shift_id):
         """Получить операторов по ID смены"""
         self.cursor.execute("""
-            SELECT o.id, o.full_name, o.is_available
+            SELECT o.id, o.full_name, o.gender, o.is_available, o.is_generalist
             FROM operators o
             WHERE o.shift_template_id = %s
             ORDER BY o.id
         """, (shift_id,))
         return self.cursor.fetchall()
+
+    def get_shift_by_id(self, shift_id):
+        """Получить данные смены по ID"""
+        query = """
+            SELECT id, shift_name, start_time, end_time
+            FROM shift_templates
+            WHERE id = %s
+        """
+        self.cursor.execute(query, (shift_id,))
+        row = self.cursor.fetchone()
+        if row:
+            return {
+                'id': row[0],
+                'name': row[1],
+                'start_time': row[2],
+                'end_time': row[3]
+            }
+        return None
 
     # ========== СТАТИСТИКА ==========
 
@@ -148,35 +307,12 @@ class ContactCenterDB:
             SELECT 
                 COUNT(*) as total,
                 SUM(CASE WHEN is_available THEN 1 ELSE 0 END) as available,
+                SUM(CASE WHEN is_generalist THEN 1 ELSE 0 END) as generalists,
+                SUM(CASE WHEN gender = 'M' THEN 1 ELSE 0 END) as males,
+                SUM(CASE WHEN gender = 'F' THEN 1 ELSE 0 END) as females,
                 ROUND(AVG(patience_level)::numeric, 2) as avg_patience,
                 ROUND(AVG(stress_resistance_level)::numeric, 2) as avg_stress,
                 ROUND(AVG(empathy_level)::numeric, 2) as avg_empathy
             FROM operators
         """)
         return self.cursor.fetchone()
-
-# if __name__ == "__main__":
-#     with ContactCenterDB() as db:
-#         # Все операторы
-#         operators = db.get_all_operators()
-#         print(f"📋 Всего операторов: {len(operators)}")
-#
-#         # Статистика
-#         stats = db.get_stats()
-#         print(f"\n📊 Статистика:")
-#         print(f"  Доступно: {stats[1]} из {stats[0]}")
-#         print(f"  Средняя терпеливость: {stats[2]}")
-#         print(f"  Средняя стрессоустойчивость: {stats[3]}")
-#         print(f"  Средняя эмпатия: {stats[4]}")
-#
-#         # Все специализации
-#         specs = db.get_all_specializations()
-#         print(f"\n📌 Специализации:")
-#         for spec in specs:
-#             print(f"  {spec[0]}. {spec[1]}")
-#
-#         # Все смены
-#         shifts = db.get_all_shifts()
-#         print(f"\n🕐 Смены:")
-#         for shift in shifts:
-#             print(f"  {shift[0]}. {shift[1]} ({shift[2]} - {shift[3]})")
