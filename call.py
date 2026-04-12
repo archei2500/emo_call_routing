@@ -10,6 +10,7 @@ from models.semantic_emotion_classifier import get_semantic_emotion_classifier
 import librosa
 import webrtcvad
 import time
+import routing as rt
 
 
 welcome_audio_path = "welcome.mp3"
@@ -35,8 +36,6 @@ VAD_CENTROIDS = {
     "Happy":    [0.6200, 0.6343, 0.6539]
 }
 EMA_ALPHA = 0.35  # коэффициент забывания
-TRIGGER_ANGER = 0.12
-TRIGGER_DISTRESS = 0.20
 
 
 def update_trigger(stream_state):
@@ -59,10 +58,10 @@ def update_trigger(stream_state):
 
 
 def background_age_gender(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью, которая определяет возраст и пол человека по голосу.
     Итоговый результат будет сохранён в stream_state.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["age_gender_processing"] = False
@@ -140,9 +139,9 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
 
 
 def background_child_detection(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью, которая по голосу определяет, взрослый это или ребёнок.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["adult_child_processing"] = False
@@ -235,10 +234,10 @@ def compute_emotion_risks(vad_vec, centroids=VAD_CENTROIDS, tau=0.15, w_sad=0.80
 
 
 def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью VAD.
     Итоговый результат сохраняется в stream_state.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["emotion_vad_processing"] = False
@@ -288,9 +287,9 @@ def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
         prev_class = prev_giga.get("predicted_class") if prev_giga else None
 
         should_call = False
-        if anger_risk > TRIGGER_ANGER and prev_class != "angry":
+        if anger_risk >= rt.TRIGGER_ANGER and prev_class != "angry":
             should_call = True
-        elif distress_risk > TRIGGER_DISTRESS and prev_class != "sad":
+        elif distress_risk >= rt.TRIGGER_DISTRESS and prev_class != "sad":
             should_call = True
 
         gigaam_busy = stream_state.get("gigaam_processing", False)
@@ -655,11 +654,8 @@ def process_full_audio(audio_state, stream_state):
         # определение эмоции по тексту
         semantic_emotion_classifier = get_semantic_emotion_classifier()
         emotion_result = semantic_emotion_classifier.predict(transcription)
-        # TODO: вызов функции маршрутизации
-        print(stream_state)
-        print(intent_result)
-        print(emotion_result)
-        return str(stream_state), audio_state, stream_state, transcription
+        result = rt.route_inquiry(stream_state, intent_result, emotion_result, routing_mode)
+        return result, audio_state, stream_state, transcription
     else:
         print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
         return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state, "-"

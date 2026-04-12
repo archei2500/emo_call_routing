@@ -2,9 +2,41 @@ from database import ContactCenterDB
 from datetime import date, datetime
 import math
 
-# пороги (нужно подобрать экспериментально или эмпирически)
-T_anger = 0.3
-T_distress = 0.25
+# пороги valence-arousal-dominance для подозрения в агрессии или дистрессе
+TRIGGER_ANGER = 0.12
+TRIGGER_DISTRESS = 0.20
+
+WEIGHTS = {
+    # Сценарий 1: Все модели (VAD + GigaAM + Text)
+    "full": {
+        "anger":   {"vad": 0.25, "giga": 0.50, "text": 0.25},
+        "distress": {"vad": 0.25, "giga": 0.35, "text": 0.40}
+    },
+    # Сценарий 2: VAD + GigaAM (текст недоступен)
+    "vad_giga": {
+        "anger":   {"vad": 0.333, "giga": 0.667, "text": 0.0},
+        "distress": {"vad": 0.417, "giga": 0.583, "text": 0.0}
+    },
+    # Сценарий 3: VAD + Text (GigaAM не успела, но VAD подозревает)
+    "vad_text": {
+        "anger":   {"vad": 0.50, "giga": 0.0, "text": 0.50},
+        "distress": {"vad": 0.385, "giga": 0.0, "text": 0.615}
+    },
+    # Сценарий 4: VAD спокойна, текст доступен
+    "vad_calm": {
+        "anger":   {"vad": 0.10, "giga": 0.0, "text": 0.90},
+        "distress": {"vad": 0.10, "giga": 0.0, "text": 0.90}
+    }
+}
+
+# Пороги для каждого сценария (получены из взвешенных индивидуальных порогов)
+THRESHOLDS = {
+    "full":      {"T_anger": 0.302, "T_distress": 0.505},
+    "vad_giga":  {"T_anger": 0.300, "T_distress": 0.375},
+    "vad_text":  {"T_anger": 0.215, "T_distress": 0.508},
+    "vad_calm":  {"T_anger": 0.230, "T_distress": 0.550},
+    "text_only": {"T_anger": 0.310, "T_distress": 0.700}
+}
 
 birth_date_idx = 3
 start_date_idx = 4
@@ -182,36 +214,54 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
         anger_risk = vad_risks.get("anger", 0.0)
         distress_risk = vad_risks.get("distress", 0.0)
         # получение предсказаний GigaAM, если они есть
-        giga_data = paralinguistic_features.get("emo_result")
-        giga_probs = giga_data.get("probs", None)
+        giga_data = paralinguistic_features.get("emo_result", None)
+        giga_probs = giga_data.get("probs", None) if giga_data else None
         g_anger = giga_probs.get("angry", 0.0) if giga_probs else 0.0
         g_distress = giga_probs.get("sad", 0.0) if giga_probs else 0.0
         # текстовые предсказания
-        t_anger = semantic_emotion.get("probabilities", {}).get("anger", 0.0) if semantic_emotion else 0.0
-        t_distress = (semantic_emotion.get("probabilities", {}).get("sadness", 0.0) +
-                      semantic_emotion.get("probabilities", {}).get("fear", 0.0)) if semantic_emotion else 0.0
-        if anger_risk >= distress_risk:
-            w_vad, w_giga, w_text = 0.25, 0.50, 0.25
+        text_anger = semantic_emotion.get("probabilities", {}).get("anger", 0.0) if semantic_emotion else 0.0
+        text_distress = (semantic_emotion.get("probabilities", {}).get("sadness", 0.0) +
+                         semantic_emotion.get("probabilities", {}).get("fear", 0.0)) if semantic_emotion else 0.0
+
+        has_giga = bool(giga_probs)
+        has_text = bool(semantic_emotion)
+        giga_should_have_triggered = (anger_risk >= TRIGGER_ANGER) or (distress_risk >= TRIGGER_DISTRESS)
+
+        # выбор сценария и соответствующих весов/порогов
+        if has_giga and has_text:
+            scenario = "full"
+        elif has_giga:
+            scenario = "vad_giga"
+        elif has_text and giga_should_have_triggered:
+            scenario = "vad_text"
+        elif has_text:
+            scenario = "vad_calm"
         else:
-            w_vad, w_giga, w_text = 0.25, 0.35, 0.40
-        # нормализация весов под доступные модели
-        active_weights = [w_vad]
-        if giga_data:
-            active_weights.append(w_giga)
-        if semantic_emotion:
-            active_weights.append(w_text)
-        sum_w = sum(active_weights)
-        w_vad_n = w_vad / sum_w
-        w_giga_n = w_giga / sum_w if giga_data else 0.0
-        w_text_n = w_text / sum_w if semantic_emotion else 0.0
-        # итоговые риски
-        final_anger = (w_vad_n * anger_risk + w_giga_n * g_anger + w_text_n * t_anger)
-        final_distress = (w_vad_n * distress_risk + w_giga_n * g_distress + w_text_n * t_distress)
-        # выбор качества оператора по эмоциональному состоянию
-        if final_anger > T_anger:
-            emo_route = "stress_operator"
-        elif final_distress > T_distress:
-            emo_route = "empathy_operator"
+            scenario = None
+
+        if scenario:
+            # выбор ветки (anger или distress)
+            if anger_risk >= distress_risk:
+                branch = "anger"
+            else:
+                branch = "distress"
+            w = WEIGHTS[scenario][branch]
+            t_anger = THRESHOLDS[scenario]["T_anger"]
+            t_distress = THRESHOLDS[scenario]["T_distress"]
+            # итоговые риски
+            final_anger = (w["vad"] * anger_risk +
+                           w["giga"] * g_anger +
+                           w["text"] * text_anger)
+            final_distress = (w["vad"] * distress_risk +
+                              w["giga"] * g_distress +
+                              w["text"] * text_distress)
+            # выбор оператора по эмоциональному состоянию
+            if final_anger > t_anger:
+                emo_route = "stress_operator"
+            elif final_distress > t_distress:
+                emo_route = "empathy_operator"
+            else:
+                emo_route = "standard_operator"
         else:
             emo_route = "standard_operator"
     elif semantic_emotion:
@@ -383,5 +433,3 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
         else:
             print(f"[ROUTING] {reason}")
             return "Извините, в данный момент нет доступных операторов. Пожалуйста, позвоните позже или оставьте заявку на сайте."
-
-
