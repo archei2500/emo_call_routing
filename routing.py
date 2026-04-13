@@ -3,40 +3,17 @@ from datetime import date, datetime
 import math
 
 # пороги valence-arousal-dominance для подозрения в агрессии или дистрессе
-TRIGGER_ANGER = 0.12
-TRIGGER_DISTRESS = 0.20
+TRIGGER_ANGER = T_VAD_ANGER = 0.12
+TRIGGER_DISTRESS = T_VAD_DISTRESS = 0.20
+# индивидуальные пороги моделей
+T_GIGA_ANGER = 0.39
+T_GIGA_DISTRESS = 0.50
+T_TEXT_ANGER = 0.31
+T_TEXT_DISTRESS = 0.70
 
-WEIGHTS = {
-    # Сценарий 1: Все модели (VAD + GigaAM + Text)
-    "full": {
-        "anger":   {"vad": 0.25, "giga": 0.50, "text": 0.25},
-        "distress": {"vad": 0.25, "giga": 0.35, "text": 0.40}
-    },
-    # Сценарий 2: VAD + GigaAM (текст недоступен)
-    "vad_giga": {
-        "anger":   {"vad": 0.333, "giga": 0.667, "text": 0.0},
-        "distress": {"vad": 0.417, "giga": 0.583, "text": 0.0}
-    },
-    # Сценарий 3: VAD + Text (GigaAM не успела, но VAD подозревает)
-    "vad_text": {
-        "anger":   {"vad": 0.50, "giga": 0.0, "text": 0.50},
-        "distress": {"vad": 0.385, "giga": 0.0, "text": 0.615}
-    },
-    # Сценарий 4: VAD спокойна, текст доступен
-    "vad_calm": {
-        "anger":   {"vad": 0.10, "giga": 0.0, "text": 0.90},
-        "distress": {"vad": 0.10, "giga": 0.0, "text": 0.90}
-    }
-}
-
-# Пороги для каждого сценария (получены из взвешенных индивидуальных порогов)
-THRESHOLDS = {
-    "full":      {"T_anger": 0.302, "T_distress": 0.505},
-    "vad_giga":  {"T_anger": 0.300, "T_distress": 0.375},
-    "vad_text":  {"T_anger": 0.215, "T_distress": 0.508},
-    "vad_calm":  {"T_anger": 0.230, "T_distress": 0.550},
-    "text_only": {"T_anger": 0.310, "T_distress": 0.700}
-}
+# базовые пороги
+BASE_T_ANGER = 0.302
+BASE_T_DISTRESS = 0.505
 
 birth_date_idx = 3
 start_date_idx = 4
@@ -84,18 +61,57 @@ def calculate_experience_years(start_date):
 def get_shift_fatigue(shift_start_time, shift_end_time):
     """
     Возвращает коэффициент усталости (0 = только начал, 1 = конец смены)
+    Поддерживает смены, переходящие через полночь (например, 16:00 - 00:00)
     """
     now = datetime.now().time()
-    # если смена ещё не началась или уже закончилась
-    if now < shift_start_time or now > shift_end_time:
-        return 1.0
-    # сколько всего минут в смене
-    total_minutes = (shift_end_time.hour * 60 + shift_end_time.minute) - \
-                    (shift_start_time.hour * 60 + shift_start_time.minute)
-    # сколько минут уже отработал
-    worked_minutes = (now.hour * 60 + now.minute) - \
-                     (shift_start_time.hour * 60 + shift_start_time.minute)
-    return worked_minutes / total_minutes
+
+    start_min = shift_start_time.hour * 60 + shift_start_time.minute
+    end_min = shift_end_time.hour * 60 + shift_end_time.minute
+    now_min = now.hour * 60 + now.minute
+
+    # Смена через полночь (например, 16:00 - 00:00)
+    if start_min > end_min:
+        # Проверяем, находимся ли мы в смене
+        if now_min >= start_min or now_min <= end_min:
+            # сколько всего минут в смене
+            total_minutes = (24 * 60 - start_min) + end_min
+
+            # сколько минут уже отработал
+            if now_min >= start_min:
+                worked_minutes = now_min - start_min
+            else:
+                worked_minutes = (24 * 60 - start_min) + now_min
+
+            if total_minutes == 0:
+                return 0.0
+
+            fatigue = worked_minutes / total_minutes
+            if fatigue < 0:
+                return 0.0
+            if fatigue > 1:
+                return 1.0
+            return fatigue
+        else:
+            return 1.0
+
+    # Обычная смена (start <= end)
+    else:
+        if now_min < start_min or now_min > end_min:
+            return 1.0
+
+        total_minutes = end_min - start_min
+
+        if total_minutes == 0:
+            return 0.0
+
+        worked_minutes = now_min - start_min
+        fatigue = worked_minutes / total_minutes
+
+        if fatigue < 0:
+            return 0.0
+        if fatigue > 1:
+            return 1.0
+        return fatigue
 
 
 def filter_by_effective_skill(operators, skill_idx, skill_name):
@@ -223,39 +239,70 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
         text_distress = (semantic_emotion.get("probabilities", {}).get("sadness", 0.0) +
                          semantic_emotion.get("probabilities", {}).get("fear", 0.0)) if semantic_emotion else 0.0
 
-        has_giga = bool(giga_probs)
+        has_giga = bool(giga_data)
         has_text = bool(semantic_emotion)
-        giga_should_have_triggered = (anger_risk >= TRIGGER_ANGER) or (distress_risk >= TRIGGER_DISTRESS)
+        # оценка уверенности по индивидуальным порогам
+        vad_c_a = anger_risk >= T_VAD_ANGER
+        giga_c_a = g_anger >= T_GIGA_ANGER
+        text_c_a = text_anger >= T_TEXT_ANGER
+        vad_c_d = distress_risk >= T_VAD_DISTRESS
+        giga_c_d = g_distress >= T_GIGA_DISTRESS
+        text_c_d = text_distress >= T_TEXT_DISTRESS
 
-        # выбор сценария и соответствующих весов/порогов
+        audio_strong = (vad_c_a and giga_c_a) or (vad_c_d and giga_c_d)
+        text_strong = text_c_a or text_c_d
+
+        # динамические веса и пороги
+        w = {"vad": 0.0, "giga": 0.0, "text": 0.0}
+        t_anger = BASE_T_ANGER
+        t_distress = BASE_T_DISTRESS
+        scenario_handled = False
+
         if has_giga and has_text:
-            scenario = "full"
-        elif has_giga:
-            scenario = "vad_giga"
-        elif has_text and giga_should_have_triggered:
-            scenario = "vad_text"
-        elif has_text:
-            scenario = "vad_calm"
-        else:
-            scenario = None
-
-        if scenario:
-            # выбор ветки (anger или distress)
-            if anger_risk >= distress_risk:
-                branch = "anger"
+            scenario_handled = True
+            if audio_strong:
+                # Аудио уверено - верим аудио, текст приглушаем, пороги снижаем
+                w = {"vad": 0.25, "giga": 0.60, "text": 0.15}
+                t_anger, t_distress = BASE_T_ANGER * 0.7, BASE_T_DISTRESS * 0.7
+            elif text_strong:
+                # Текст уверен, аудио нет - верим тексту, пороги повышаем
+                w = {"vad": 0.15, "giga": 0.25, "text": 0.60}
+                t_anger, t_distress = BASE_T_ANGER * 1.3, BASE_T_DISTRESS * 1.3
             else:
-                branch = "distress"
-            w = WEIGHTS[scenario][branch]
-            t_anger = THRESHOLDS[scenario]["T_anger"]
-            t_distress = THRESHOLDS[scenario]["T_distress"]
-            # итоговые риски
+                # Нейтральный фон → стандартный баланс
+                if anger_risk >= distress_risk:
+                    w = {"vad": 0.25, "giga": 0.50, "text": 0.25}
+                else:
+                    w = {"vad": 0.25, "giga": 0.35, "text": 0.40}
+
+        elif has_giga:
+            scenario_handled = True
+            w = {"vad": 0.30, "giga": 0.70, "text": 0.0}
+            if audio_strong:
+                t_anger, t_distress = BASE_T_ANGER * 0.8, BASE_T_DISTRESS * 0.8
+
+        elif has_text:
+            scenario_handled = True
+            vad_triggered = vad_c_a or vad_c_d
+            if vad_triggered:
+                # VAD видит эмоцию, но GigaAM не успела - верим VAD больше
+                w = {"vad": 0.50, "giga": 0.0, "text": 0.50}
+            else:
+                # VAD спокойна - верим только тексту
+                w = {"vad": 0.10, "giga": 0.0, "text": 0.90}
+                t_anger, t_distress = BASE_T_ANGER * 1.2, BASE_T_DISTRESS * 1.2
+
+        # 4. Итоговый расчёт и решение (только если сценарий был определён)
+        if scenario_handled:
             final_anger = (w["vad"] * anger_risk +
                            w["giga"] * g_anger +
                            w["text"] * text_anger)
             final_distress = (w["vad"] * distress_risk +
                               w["giga"] * g_distress +
                               w["text"] * text_distress)
-            # выбор оператора по эмоциональному состоянию
+            print("Предсказания по семантике:", text_anger, text_distress)
+            print("Финальные риски:", "Гнев - ", final_anger, "Дистресс - ", final_distress)
+
             if final_anger > t_anger:
                 emo_route = "stress_operator"
             elif final_distress > t_distress:

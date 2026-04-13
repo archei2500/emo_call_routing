@@ -1,2 +1,5 @@
 .idea/
 model_files/
+__pycache__/
+models/__pycache__/
+venv_wsl/

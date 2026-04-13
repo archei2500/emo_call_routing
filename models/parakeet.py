@@ -29,7 +29,7 @@ class Parakeet:
 
             # Если передан локальный путь, загружаем оттуда, иначе с HuggingFace
             if model_path is not None:
-                self.model = onnx_asr.load_model(model_path)
+                self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
             else:
                 self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3")
 

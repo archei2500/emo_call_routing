@@ -5,6 +5,8 @@ import call
 from database import ContactCenterDB
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-user'
 os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
+base_dir = os.path.dirname(os.path.abspath(__file__))
+os.environ['HF_HOME'] = os.path.join(base_dir, 'model_files', 'cache')
 
 
 # initial_df = pd.DataFrame({
@@ -192,6 +194,9 @@ with gr.Blocks() as demo:
         inputs=[audio_state, stream_state],
         outputs=[routing_result, audio_state, stream_state, problem_text]
     ).then(
+        fn=lambda: gr.update(visible=True),
+        outputs=routing_result
+    ).then(
         fn=lambda: gr.update(visible=False),
         outputs=confirm_age_btn
     ).then(
@@ -218,4 +223,4 @@ with gr.Blocks() as demo:
     )
 
 
-demo.launch(share=True, max_file_size=None)
+demo.launch(share=False, max_file_size=None)

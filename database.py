@@ -136,6 +136,68 @@ class ContactCenterDB:
         self.cursor.execute(query, (intent_code,))
         return self.cursor.fetchall()
 
+    # def get_available_on_shift_operators_by_intent(self, intent_code):
+    #     current_time = datetime.now().time()
+    #
+    #     query = """
+    #         SELECT
+    #             o.id,
+    #             o.full_name,
+    #             o.gender,
+    #             o.birth_date,
+    #             o.start_date,
+    #             o.patience_level,
+    #             o.stress_resistance_level,
+    #             o.empathy_level,
+    #             os.proficiency_level,
+    #             os.is_primary,
+    #             o.shift_template_id,
+    #             st.start_time,
+    #             st.end_time,
+    #             s.name as specialization_name
+    #         FROM operators o
+    #         JOIN operator_specializations os ON o.id = os.operator_id
+    #         JOIN specializations s ON os.specialization_id = s.id
+    #         JOIN shift_templates st ON o.shift_template_id = st.id
+    #         WHERE o.is_available = TRUE
+    #             AND s.intent_code = %s
+    #             AND st.start_time <= %s
+    #             AND st.end_time >= %s
+    #         ORDER BY os.is_primary DESC, os.proficiency_level DESC, o.id
+    #     """
+    #     self.cursor.execute(query, (intent_code, current_time, current_time))
+    #     return self.cursor.fetchall()
+    #
+    # def get_available_on_shift_generalists(self):
+    #     current_time = datetime.now().time()
+    #
+    #     query = """
+    #         SELECT
+    #             o.id,
+    #             o.full_name,
+    #             o.gender,
+    #             o.birth_date,
+    #             o.start_date,
+    #             o.patience_level,
+    #             o.stress_resistance_level,
+    #             o.empathy_level,
+    #             NULL as proficiency_level,
+    #             FALSE as is_primary,
+    #             o.shift_template_id,
+    #             st.start_time,
+    #             st.end_time,
+    #             NULL as specialization_name
+    #         FROM operators o
+    #         JOIN shift_templates st ON o.shift_template_id = st.id
+    #         WHERE o.is_available = TRUE
+    #             AND o.is_generalist = TRUE
+    #             AND st.start_time <= %s
+    #             AND st.end_time >= %s
+    #         ORDER BY o.patience_level DESC, o.stress_resistance_level DESC
+    #     """
+    #     self.cursor.execute(query, (current_time, current_time))
+    #     return self.cursor.fetchall()
+
     def get_available_on_shift_operators_by_intent(self, intent_code):
         current_time = datetime.now().time()
 
@@ -161,11 +223,16 @@ class ContactCenterDB:
             JOIN shift_templates st ON o.shift_template_id = st.id
             WHERE o.is_available = TRUE 
                 AND s.intent_code = %s
-                AND st.start_time <= %s
-                AND st.end_time >= %s
+                AND (
+                    -- обычные смены (start <= end)
+                    (st.start_time <= st.end_time AND st.start_time <= %s AND st.end_time >= %s)
+                    OR
+                    -- смены через полночь (start > end)
+                    (st.start_time > st.end_time AND (%s >= st.start_time OR %s <= st.end_time))
+                )
             ORDER BY os.is_primary DESC, os.proficiency_level DESC, o.id
         """
-        self.cursor.execute(query, (intent_code, current_time, current_time))
+        self.cursor.execute(query, (intent_code, current_time, current_time, current_time, current_time))
         return self.cursor.fetchall()
 
     def get_available_on_shift_generalists(self):
@@ -191,11 +258,16 @@ class ContactCenterDB:
             JOIN shift_templates st ON o.shift_template_id = st.id
             WHERE o.is_available = TRUE 
                 AND o.is_generalist = TRUE
-                AND st.start_time <= %s
-                AND st.end_time >= %s
+                AND (
+                    -- обычные смены (start <= end)
+                    (st.start_time <= st.end_time AND st.start_time <= %s AND st.end_time >= %s)
+                    OR
+                    -- смены через полночь (start > end)
+                    (st.start_time > st.end_time AND (%s >= st.start_time OR %s <= st.end_time))
+                )
             ORDER BY o.patience_level DESC, o.stress_resistance_level DESC
         """
-        self.cursor.execute(query, (current_time, current_time))
+        self.cursor.execute(query, (current_time, current_time, current_time, current_time))
         return self.cursor.fetchall()
 
     def add_operator(self, full_name, gender, birth_date, start_date,

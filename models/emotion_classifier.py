@@ -14,13 +14,12 @@ class EmotionClassifier:
             cls._instance = super(EmotionClassifier, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, model_name: str = None, model_dir: str = None, device: str = None):
+    def __init__(self, model_name: str = None, device: str = None):
         """
         Инициализация модели (происходит только один раз).
 
         Args:
             model_name: Имя модели ('emo' или другая)
-            model_dir: Путь к локальной папке с моделью (если None, скачивается из интернета в кэш)
             device: Устройство ('cpu' или 'cuda')
         """
         if not self._initialized:
@@ -30,12 +29,7 @@ class EmotionClassifier:
                 self.device = torch.device(device)
 
             self.model_name = model_name or "emo"
-
-            # Загрузка модели: если передан model_dir, загружаем локально, иначе из интернета
-            if model_dir is not None:
-                self.model = gigaam.load_model(self.model_name, model_dir=model_dir)
-            else:
-                self.model = gigaam.load_model(self.model_name)
+            self.model = gigaam.load_model(self.model_name)
 
             # Переносим на нужное устройство
             self.model = self.model.to(self.device)
@@ -93,13 +87,12 @@ class EmotionClassifier:
 emotion_classifier = None
 
 
-def get_emotion_classifier(model_name: str = None, model_dir: str = None, device: str = None) -> EmotionClassifier:
+def get_emotion_classifier(model_name: str = None, device: str = None) -> EmotionClassifier:
     """
     Функция для получения глобального экземпляра классификатора эмоций.
 
     Args:
         model_name: Имя модели ('emo' или другая)
-        model_dir: Путь к локальной папке с моделью (если None, скачивается из интернета)
         device: Устройство ('cpu' или 'cuda')
 
     Returns:
@@ -107,5 +100,5 @@ def get_emotion_classifier(model_name: str = None, model_dir: str = None, device
     """
     global emotion_classifier
     if emotion_classifier is None:
-        emotion_classifier = EmotionClassifier(model_name, model_dir, device)
+        emotion_classifier = EmotionClassifier(model_name, device)
     return emotion_classifier
