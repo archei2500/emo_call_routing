@@ -201,29 +201,31 @@ def filter_by_effective_patience(operators, operators_with_age):
     return filtered_operators, reason
 
 
-def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, routing_mode=0):
-    # Что у нас вообще есть?
-    # Пол
-    # Возраст
-    # Эмоция - по голосу и по тексту
-    # Интент
-    # демографические признаки
-    gender = None
-    client_category = "unknown"
-    client_age = 0
-    if routing_mode in [0, 1]:
-        gender = paralinguistic_features["ag_result"]["gender"]["predicted"]
-        client_age = paralinguistic_features["ag_result"]["age"]["years"]
-        if 14 <= client_age <= 29:
-            client_category = "young"  # молодые операторы (18-29)
-        elif 30 <= client_age <= 49:
-            client_category = "adult"  # к взрослым (30-49)
-        elif client_age >= 50:
-            client_category = "senior"  # к 50+
-        else:
-            client_category = "unknown"
+def extract_demographic_features(paralinguistic_features):
+    """
+    Извлекает демографические признаки (пол и возрастную категорию) из паралингвистических признаков.
+    Возвращает кортеж (gender, client_category).
+    """
+    gender = paralinguistic_features.get("ag_result", {}).get("gender", {}).get("predicted", None)
+    age = paralinguistic_features.get("ag_result", {}).get("age", {}).get("years", 0)
+    if 14 <= age <= 29:
+        age_category = "young"  # молодые операторы (18-29)
+    elif 30 <= age <= 49:
+        age_category = "adult"  # к взрослым (30-49)
+    elif age >= 50:
+        age_category = "senior"  # к 50+
+    else:
+        age_category = "unknown"
 
-    # эмоциональное состояние
+    return gender, age, age_category
+
+
+def determine_emotion_route(paralinguistic_features, semantic_emotion, routing_mode):
+    """
+    Определяет маршрут на основе эмоционального состояния клиента.
+    Использует VAD-модель, GigaAM (если доступна) и семантическую эмоцию.
+    Возвращает строку: "stress_operator", "empathy_operator" или "standard_operator".
+    """
     if routing_mode in [0, 2]:
         # получение рисков (предсказаны VAD-моделью)
         vad_risks = paralinguistic_features.get("emo_vad_result", {}).get("risks", {})
@@ -292,7 +294,7 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
                 w = {"vad": 0.10, "giga": 0.0, "text": 0.90}
                 t_anger, t_distress = BASE_T_ANGER * 1.2, BASE_T_DISTRESS * 1.2
 
-        # 4. Итоговый расчёт и решение (только если сценарий был определён)
+        # итоговый расчёт и решение
         if scenario_handled:
             final_anger = (w["vad"] * anger_risk +
                            w["giga"] * g_anger +
@@ -321,6 +323,21 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
             emo_route = "standard_operator"
     else:
         emo_route = "standard_operator"
+
+    return emo_route
+
+
+def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, routing_mode=0):
+    # Подготовка
+    # извлечение демографических признаков
+    client_gender = None
+    client_age = 0
+    client_category = "unknown"
+    if routing_mode in [0, 1]:
+        client_gender, client_age, client_category = extract_demographic_features(paralinguistic_features)
+
+    # определение того, клиент с каким качеством нужен (стрессоустойчивость/эмпатия)
+    emo_route = determine_emotion_route(paralinguistic_features, semantic_emotion, routing_mode)
 
     # тема обращения
     intent_name = None
@@ -404,7 +421,6 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
                 for op in suitable_operators:
                     birth_date = op[birth_date_idx]
                     age = calculate_age(birth_date)
-                    patience = op[patience_idx]
                     operators_with_age.append((op, age))
 
                 # правило для пожилых клиентов 60+
@@ -443,9 +459,9 @@ def route_inquiry(paralinguistic_features, intent=None, semantic_emotion=None, r
 
                 # 3.2. Выбор по полу
                 if len(suitable_operators) > 1:
-                    client_gender = paralinguistic_features.get("ag_result", {}).get("gender", {}).get("predicted")
                     if client_gender in ["male", "female"]:
-                        same_gender = [op for op in suitable_operators if op[gender_idx] == client_gender]
+                        op_gender = 'female' if op[gender_idx] == 'F' else 'male' if op[gender_idx] == 'M' else None
+                        same_gender = [op for op in suitable_operators if op_gender == client_gender]
 
                         if same_gender:
                             suitable_operators = same_gender
