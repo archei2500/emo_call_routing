@@ -657,7 +657,7 @@ def process_full_audio(audio_state, stream_state):
         result = rt.route_inquiry(stream_state, intent_result, emotion_result, routing_mode)
         return result, audio_state, stream_state, transcription
     else:
-        print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
+        print("Ошибка! Буфер пуст. Речь не распознана.")
         return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state, "-"
 
 
