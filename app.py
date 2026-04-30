@@ -108,7 +108,7 @@ with gr.Blocks() as demo:
         routing_result = gr.Textbox(label="Подобранный специалист", visible=False)
     with gr.Tab("Панель специалиста"):
         gr.Markdown("### <center>Описание проблемы клиента:")
-        problem_text = gr.Textbox(label="Цель звонка", visible=True)
+        problem_text = gr.Textbox(label="Цель звонка", visible=True, lines=5)
     with gr.Tab("Панель администратора"):
         admin_table = gr.Dataframe(
             value=initial_df,

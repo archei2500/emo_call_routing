@@ -3,8 +3,8 @@ from datetime import date, datetime
 import math
 
 # пороги valence-arousal-dominance для подозрения в агрессии или дистрессе
-TRIGGER_ANGER = T_VAD_ANGER = 0.12
-TRIGGER_DISTRESS = T_VAD_DISTRESS = 0.20
+TRIGGER_ANGER = T_VAD_ANGER = 0.08
+TRIGGER_DISTRESS = T_VAD_DISTRESS = 0.15
 # индивидуальные пороги моделей
 T_GIGA_ANGER = 0.39
 T_GIGA_DISTRESS = 0.50
@@ -12,8 +12,8 @@ T_TEXT_ANGER = 0.31
 T_TEXT_DISTRESS = 0.70
 
 # базовые пороги
-BASE_T_ANGER = 0.302
-BASE_T_DISTRESS = 0.505
+BASE_T_ANGER = 0.293
+BASE_T_DISTRESS = 0.493
 
 birth_date_idx = 3
 start_date_idx = 4
