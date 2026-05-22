@@ -40,7 +40,6 @@ def calculate_age(birth_date):
     # был ли день рождения в этом году
     if (today.month, today.day) < (birth_date.month, birth_date.day):
         age -= 1
-
     return age
 
 
@@ -48,13 +47,10 @@ def calculate_experience_years(start_date):
     """Стаж работы в годах"""
     if not start_date:
         return 0
-
     today = datetime.now().date()
     years = today.year - start_date.year
-
     if (today.month, today.day) < (start_date.month, start_date.day):
         years -= 1
-
     return years
 
 
@@ -64,27 +60,22 @@ def get_shift_fatigue(shift_start_time, shift_end_time):
     Поддерживает смены, переходящие через полночь (например, 16:00 - 00:00)
     """
     now = datetime.now().time()
-
     start_min = shift_start_time.hour * 60 + shift_start_time.minute
     end_min = shift_end_time.hour * 60 + shift_end_time.minute
     now_min = now.hour * 60 + now.minute
-
     # Смена через полночь (например, 16:00 - 00:00)
     if start_min > end_min:
         # Проверяем, находимся ли мы в смене
         if now_min >= start_min or now_min <= end_min:
             # сколько всего минут в смене
             total_minutes = (24 * 60 - start_min) + end_min
-
             # сколько минут уже отработал
             if now_min >= start_min:
                 worked_minutes = now_min - start_min
             else:
                 worked_minutes = (24 * 60 - start_min) + now_min
-
             if total_minutes == 0:
                 return 0.0
-
             fatigue = worked_minutes / total_minutes
             if fatigue < 0:
                 return 0.0
@@ -93,20 +84,15 @@ def get_shift_fatigue(shift_start_time, shift_end_time):
             return fatigue
         else:
             return 1.0
-
     # Обычная смена (start <= end)
     else:
         if now_min < start_min or now_min > end_min:
             return 1.0
-
         total_minutes = end_min - start_min
-
         if total_minutes == 0:
             return 0.0
-
         worked_minutes = now_min - start_min
         fatigue = worked_minutes / total_minutes
-
         if fatigue < 0:
             return 0.0
         if fatigue > 1:
@@ -129,7 +115,6 @@ def filter_by_effective_skill(operators, skill_idx, skill_name):
     """
     if not operators:
         return operators, ""
-
     operators_with_effective = []
     for op in operators:
         base_skill = op[skill_idx]
@@ -138,7 +123,6 @@ def filter_by_effective_skill(operators, skill_idx, skill_name):
         fatigue = get_shift_fatigue(start_time, end_time)
         effective_skill = base_skill * (1 - fatigue)
         operators_with_effective.append((op, effective_skill))
-
     # максимум и порог (округление вниз)
     max_effective = max(operators_with_effective, key=lambda x: x[1])[1]
     threshold = math.floor(max_effective)
@@ -154,7 +138,6 @@ def filter_by_effective_skill(operators, skill_idx, skill_name):
     reason = (f" → Эфф. {skill_name}: максимум {max_effective:.2f}, "
               f"порог {threshold}, выбрано {len(filtered_operators)} чел, "
               f"лучший по опыту ({top_exp} лет)")
-
     return filtered_operators, reason
 
 
@@ -168,7 +151,6 @@ def filter_by_effective_patience(operators, operators_with_age):
     """
     if not operators:
         return operators, ""
-
     operators_with_effective = []
     for op, age in operators_with_age:
         base_patience = op[patience_idx]
@@ -177,10 +159,8 @@ def filter_by_effective_patience(operators, operators_with_age):
         fatigue = get_shift_fatigue(start_time, end_time)
         effective_patience = base_patience * (1 - fatigue)
         operators_with_effective.append((op, age, effective_patience))
-
     max_effective = max(eff for _, _, eff in operators_with_effective)
     threshold = math.floor(max_effective)
-
     good_operators = [(op, age, eff) for op, age, eff in operators_with_effective if eff >= threshold]
     senior_ops = [(op, age, eff) for op, age, eff in good_operators if age >= 50]
     if senior_ops:
@@ -197,7 +177,6 @@ def filter_by_effective_patience(operators, operators_with_age):
         top_exp = calculate_experience_years(filtered_operators[0][start_date_idx])
         reason = (f" → Клиент 60+: эфф. терпение макс {max_effective:.2f}, порог {threshold}, "
                   f"нет операторов 50+, лучший по опыту ({top_exp} лет)")
-
     return filtered_operators, reason
 
 
@@ -216,7 +195,6 @@ def extract_demographic_features(paralinguistic_features):
         age_category = "senior"  # к 50+
     else:
         age_category = "unknown"
-
     return gender, age, age_category
 
 
@@ -240,7 +218,6 @@ def determine_emotion_route(paralinguistic_features, semantic_emotion, routing_m
         text_anger = semantic_emotion.get("probabilities", {}).get("anger", 0.0) if semantic_emotion else 0.0
         text_distress = (semantic_emotion.get("probabilities", {}).get("sadness", 0.0) +
                          semantic_emotion.get("probabilities", {}).get("fear", 0.0)) if semantic_emotion else 0.0
-
         has_giga = bool(giga_data)
         has_text = bool(semantic_emotion)
         # оценка уверенности по индивидуальным порогам
@@ -250,16 +227,13 @@ def determine_emotion_route(paralinguistic_features, semantic_emotion, routing_m
         vad_c_d = distress_risk >= T_VAD_DISTRESS
         giga_c_d = g_distress >= T_GIGA_DISTRESS
         text_c_d = text_distress >= T_TEXT_DISTRESS
-
         audio_strong = (vad_c_a and giga_c_a) or (vad_c_d and giga_c_d)
         text_strong = text_c_a or text_c_d
-
         # динамические веса и пороги
         w = {"vad": 0.0, "giga": 0.0, "text": 0.0}
         t_anger = BASE_T_ANGER
         t_distress = BASE_T_DISTRESS
         scenario_handled = False
-
         if has_giga and has_text:
             scenario_handled = True
             if audio_strong:

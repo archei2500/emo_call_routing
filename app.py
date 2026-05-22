@@ -9,12 +9,6 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 os.environ['HF_HOME'] = os.path.join(base_dir, 'model_files', 'cache')
 
 
-# initial_df = pd.DataFrame({
-#     "Имя": ["Анна", "Борис", "Кирилл"],
-#     "Возраст": [28, 34, 25],
-#     "Город": ["Москва", "Санкт-Петербург", "Казань"]
-# })
-
 def load_operators_dataframe():
     with ContactCenterDB() as db:
         operators = db.get_all_operators()
@@ -68,6 +62,43 @@ def increment_call_id(state):
     state["age_gender_processing"] = False
     state["emotion_vad_processing"] = False
     return state
+
+
+def save_admin_changes(updated_df):
+    """
+    Принимает изменённый DataFrame от администратора
+    и сохраняет изменения в БД через ContactCenterDB.
+    Обновляются только поля, доступные в загруженной таблице.
+    """
+    try:
+        with ContactCenterDB() as db:
+            for _, row in updated_df.iterrows():
+                operator_id = int(row['operator_id'])
+                is_available = True if row['status'] == 'Доступен' else False
+                is_generalist = True if row['generalist'] == 'Да' else False
+                gender = 'M' if row['gender_ru'] == 'М' else 'F'
+                birth_date = pd.to_datetime(row['birth_date']).date() if isinstance(row['birth_date'], str) else row[
+                    'birth_date']
+                start_date = pd.to_datetime(row['start_date']).date() if isinstance(row['start_date'], str) else row[
+                    'start_date']
+                db.update_operator(
+                    operator_id=operator_id,
+                    full_name=row['full_name'],
+                    gender=gender,
+                    birth_date=birth_date,
+                    start_date=start_date,
+                    patience=int(row['patience_level']),
+                    stress=int(row['stress_resistance_level']),
+                    empathy=int(row['empathy_level']),
+                    shift_id=int(row['shift_template_id']),
+                    is_available=is_available,
+                    is_generalist=is_generalist
+                )
+            print("Изменения сохранены в БД")
+            return load_operators_dataframe()
+    except Exception as e:
+        print(f"Ошибка при сохранении: {e}")
+        return load_operators_dataframe()
 
 
 call.load_models()
@@ -220,6 +251,13 @@ with gr.Blocks() as demo:
     ).then(
         fn=lambda: gr.update(visible=True),
         outputs=call_btn  # для бесконечной работы
+    )
+
+    # сохранение изменений в БД
+    admin_button.click(
+        fn=save_admin_changes,
+        inputs=admin_table,
+        outputs=admin_table
     )
 
 
