@@ -10,11 +10,10 @@ from models.semantic_emotion_classifier import get_semantic_emotion_classifier
 import librosa
 import webrtcvad
 import time
+import routing as rt
 
 
 welcome_audio_path = "welcome.mp3"
-# welcome_duration = 5.433  # в секундах
-# delay_ms = int((welcome_duration + 0.5) * 1000)
 final_audio_path = "final.mp3"
 SAMPLERATE = 16000
 FRAME_MS = 30
@@ -35,8 +34,6 @@ VAD_CENTROIDS = {
     "Happy":    [0.6200, 0.6343, 0.6539]
 }
 EMA_ALPHA = 0.35  # коэффициент забывания
-TRIGGER_ANGER = 0.12
-TRIGGER_DISTRESS = 0.20
 
 
 def update_trigger(stream_state):
@@ -59,10 +56,10 @@ def update_trigger(stream_state):
 
 
 def background_age_gender(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью, которая определяет возраст и пол человека по голосу.
     Итоговый результат будет сохранён в stream_state.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["age_gender_processing"] = False
@@ -117,22 +114,6 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
             # установка триггера
             update_trigger(stream_state)
 
-            # final_result = stream_state["ag_result"]
-            # if final_result["age_category"]["is_child"] and not stream_state.get("age_trigger", False):
-            #     stream_state["age_trigger"] = True
-            # ag_res = stream_state["ag_result"]
-            # ac_res = stream_state.get("ac_result")
-            # # проверяем, что триггер ещё не включен и возраст не подтверждён
-            # if not stream_state.get("age_trigger", False):
-            #     # Модель age/gender считает, что ребёнок
-            #     if ag_res["age_category"]["is_child"]:
-            #         stream_state["age_trigger"] = True
-            #         print("Триггер включён age/gender: возраст < 18 лет")
-            #     # ИЛИ модель adult/child (если есть) тоже считает, что ребёнок
-            #     elif ac_res and ac_res["predicted"] == "child":
-            #         stream_state["age_trigger"] = True
-            #         print("Триггер включён age/gender: adult/child модель определила ребёнка")
-
         # модель свободна
         stream_state["age_gender_processing"] = False
         print("После отработки модели генедра/возраста:")
@@ -140,9 +121,9 @@ def background_age_gender(audio_snapshot, stream_state, current_call_id):
 
 
 def background_child_detection(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью, которая по голосу определяет, взрослый это или ребёнок.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["adult_child_processing"] = False
@@ -235,10 +216,10 @@ def compute_emotion_risks(vad_vec, centroids=VAD_CENTROIDS, tau=0.15, w_sad=0.80
 
 
 def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
-    '''
+    """
     В фоне запускает обработку аудиофрагмента моделью VAD.
     Итоговый результат сохраняется в stream_state.
-    '''
+    """
     with STATE_LOCK:
         if stream_state.get("call_id") != current_call_id:
             stream_state["emotion_vad_processing"] = False
@@ -288,9 +269,9 @@ def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
         prev_class = prev_giga.get("predicted_class") if prev_giga else None
 
         should_call = False
-        if anger_risk > TRIGGER_ANGER and prev_class != "angry":
+        if anger_risk >= rt.TRIGGER_ANGER and prev_class != "angry":
             should_call = True
-        elif distress_risk > TRIGGER_DISTRESS and prev_class != "sad":
+        elif distress_risk >= rt.TRIGGER_DISTRESS and prev_class != "sad":
             should_call = True
 
         gigaam_busy = stream_state.get("gigaam_processing", False)
@@ -309,62 +290,6 @@ def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
             call_gigaam_sync(audio_snapshot, stream_state, current_call_id)
     else:
         print(f"[SKIP GigaAM] confirmed/stable: prev={prev_class}")
-
-
-# def background_emotion_vad(audio_snapshot, stream_state, current_call_id):
-#     '''
-#         В фоне запускает обработку аудиофрагмента моделью, которая определяет непрерывные измерения эмоций по голосу.
-#         Итоговый результат будет сохранён в stream_state.
-#     '''
-#     with STATE_LOCK:
-#         if stream_state.get("call_id") != current_call_id:
-#             stream_state["emotion_vad_processing"] = False
-#             print(f"Early abort: old call_id {current_call_id}, current is {stream_state['call_id']}")
-#             return
-#     model = get_emotion_vad_predictor()
-#     new_result = model.predict(audio_snapshot, SAMPLERATE)
-#     print(new_result)
-#     with STATE_LOCK:
-#         if stream_state.get("call_id") == current_call_id:
-#             print("Зашла! Они должны быть равны: ", stream_state.get("call_id"), current_call_id)
-#             prev_result = stream_state.get("emo_vad_result")
-#             if prev_result is None:
-#                 # первый запуск: просто присваиваем
-#                 stream_state["emo_vad_result"] = new_result
-#             else:
-#                 aggregated_emotions = {"arousal": max(
-#                     prev_result["emotions"]["arousal"],
-#                     new_result["emotions"]["arousal"]
-#                 )}
-#
-#                 # dominance и valence — min/max по полусфере
-#                 for dim in ["dominance", "valence"]:
-#                     p = prev_result["emotions"][dim]
-#                     n = new_result["emotions"][dim]
-#
-#                     if (p >= 0.5 and n >= 0.5) or (p <= 0.5 and n <= 0.5):
-#                         aggregated_emotions[dim] = max(p, n) if p >= 0.5 else min(p, n)
-#                     else:
-#                         aggregated_emotions[dim] = (p + n) / 2
-#
-#                 aggregated_result = {
-#                     "raw_predictions": [
-#                         aggregated_emotions["arousal"],
-#                         aggregated_emotions["dominance"],
-#                         aggregated_emotions["valence"]
-#                     ],
-#                     "emotions": aggregated_emotions
-#                 }
-#
-#                 stream_state["emo_vad_result"] = aggregated_result
-#
-#         print("После отработки модели эмоций:")
-#         print(stream_state)
-#
-#         # модель свободна
-#         stream_state["emotion_vad_processing"] = False
-#
-#     print("Модель эмоций отработала.")
 
 
 def is_chunk_speech(audio_array: np.ndarray, sample_rate: int = SAMPLERATE) -> bool:
@@ -655,211 +580,19 @@ def process_full_audio(audio_state, stream_state):
         # определение эмоции по тексту
         semantic_emotion_classifier = get_semantic_emotion_classifier()
         emotion_result = semantic_emotion_classifier.predict(transcription)
-        # TODO: вызов функции маршрутизации
-        print(stream_state)
-        print(intent_result)
-        print(emotion_result)
-        return str(stream_state), audio_state, stream_state, transcription
+        result = rt.route_inquiry(stream_state, intent_result, emotion_result, routing_mode)
+        return result, audio_state, stream_state, transcription
     else:
-        print("Ошибка! Буфер пуст. Невозможно выполнить маршрутизацию без интента.")
+        print("Ошибка! Буфер пуст. Речь не распознана.")
         return "Извините, не удалось распознать ваш запрос.", audio_state, stream_state, "-"
-
-
-    # return routing_result, audio_state, stream_state, transcription
-
-
-# def process_full_audio(audio_state, stream_state):
-#     print("Что у нас тут такое?")
-#     print(stream_state)
-#
-#     max_wait_seconds = 8.0  # максимум ждём 8 секунд
-#     sleep_interval = 0.2  # проверяем каждые 200 мс
-#
-#     waited = 0.0
-#     while waited < max_wait_seconds:
-#         with STATE_LOCK:
-#             age_done = not stream_state["age_gender_processing"] or stream_state["ag_result"] is not None
-#             emo_done = not stream_state["emotion_vad_processing"] or stream_state["emo_vad_result"] is not None
-#         if age_done and emo_done:
-#             break
-#         time.sleep(sleep_interval)
-#         waited += sleep_interval
-#
-#     if waited >= max_wait_seconds:
-#         print(f"Warning: время ожидания результатов истекло после {waited:.1f} сек")
-#
-#     error = False
-#
-#     with STATE_LOCK:
-#         if stream_state["age_trigger"] and not stream_state["age_confirmed"]:
-#             routing_result = "Вы не подтвердили, что вам больше 18 лет, поэтому мы не можем обработать ваш запрос."
-#             audio_state["full_buffer"] = []
-#             audio_state["ag_buffer"] = []
-#             audio_state["emo_vad_buffer"] = []
-#             return routing_result, audio_state, stream_state
-#
-#         if stream_state["ag_result"]:
-#             routing_result = "Возраст: " + str(stream_state["ag_result"]["age"]["years"])
-#             routing_result += "\nПол: "
-#             if stream_state["ag_result"]["gender"]["predicted"] == "male":
-#                 routing_result += "мужской"
-#             else:
-#                 routing_result += "женский"
-#         else:
-#             routing_result = "Ошибка: демографические признаки не были определены."
-#             error = True
-#
-#         if stream_state["emo_vad_result"]:
-#             routing_result += "\nЭмоциональное состояние:"
-#             routing_result += "\nValence: " + str(stream_state["emo_vad_result"]["emotions"]["valence"])
-#             routing_result += "\nArousal: " + str(stream_state["emo_vad_result"]["emotions"]["arousal"])
-#             routing_result += "\nDominance: " + str(stream_state["emo_vad_result"]["emotions"]["dominance"])
-#
-#             if stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65:
-#                 if stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5:
-#                     voice_emotion = "Клиент испытывает резко негативную эмоцию."
-#                     if stream_state["emo_vad_result"]["emotions"]["dominance"] > 0.5:
-#                         voice_emotion += " Вероятно, гнев."
-#                     else:
-#                         voice_emotion += " Вероятно, страх."
-#                 else:
-#                     voice_emotion = "Клиент испытывает яркую позитивную эмоцию."
-#             else:
-#                 voice_emotion = "Клиент достаточно спокоен."
-#         else:
-#             routing_result += "\nОшибка: эмоции не были определены."
-#             error = True
-#
-#         routing_result += "\n\nРекомендации:"
-#
-#         if not error:
-#             if stream_state["ag_result"]["age"]["years"] >= 60:
-#                 routing_result += "\nТерпеливый специалист, который готов спокойно и долго объяснять."
-#             if stream_state["ag_result"]["gender"]["predicted"] == "male":
-#                 routing_result += "\nСпециалист-мужчина."
-#             elif stream_state["ag_result"]["gender"]["predicted"] == "female":
-#                 routing_result += "\nСпециалист-женщина."
-#             if (stream_state["emo_vad_result"]["emotions"]["arousal"] > 0.65 and
-#                     stream_state["emo_vad_result"]["emotions"]["valence"] < 0.5):
-#                 routing_result += "\nСтрессоустойчивый специалист. Такой, у которого это не конец смены."
-#
-#     full_audio = np.concatenate(audio_state["full_buffer"])
-#     asr_model = get_asr_model()
-#     transcription = asr_model.transcribe(full_audio, SAMPLERATE)
-#     # llm = get_llm()
-#     # llm_response = llm.get_response(transcription)
-#     # routing_result += "\n\n" + str(llm_response)
-#
-#     # очистка
-#     # audio_state["full_buffer"] = []
-#     # audio_state["ag_buffer"] = []
-#     # audio_state["emo_vad_buffer"] = []
-#
-#     return routing_result, audio_state, stream_state, transcription
-
-
-# def process_full_audio(state):
-#     """
-#     Обрабатывает полное аудио после завершения записи
-#     """
-#     if not state.get("full_buffer"):
-#         return state, "Нет аудиоданных для обработки"
-#
-#     try:
-#         # Проверяем, есть ли данные в буфере
-#         valid_chunks = []
-#         sample_rate = SAMPLERATE
-#
-#         for chunk in state["full_buffer"]:
-#             if chunk is not None and len(chunk) > 0:
-#                 # Нормализуем чанк
-#                 if len(chunk.shape) > 1:
-#                     if chunk.shape[0] == 2:  # (2, samples)
-#                         chunk = np.mean(chunk, axis=0)
-#                         chunk = chunk.astype(np.float32)
-#                     elif chunk.shape[1] == 2:  # (samples, 2)
-#                         chunk = np.mean(chunk, axis=1)
-#                         chunk = chunk.astype(np.float32)
-#                     else:
-#                         chunk = chunk[:, 0] if chunk.shape[1] > 0 else chunk.flatten()
-#                         chunk = chunk.astype(np.float32)
-#                 else:
-#                     chunk = chunk.astype(np.float32)
-#
-#                 valid_chunks.append(chunk)
-#
-#         if not valid_chunks:
-#             return state, "Нет валидных аудиоданных"
-#
-#         # Объединяем все чанки
-#         full_audio = np.concatenate(valid_chunks)
-#
-#         # Проверяем длину
-#         if len(full_audio) == 0:
-#             return state, "Аудио пустое"
-#
-#         # Рассчитываем длительность
-#         duration_seconds = len(full_audio) / SAMPLERATE
-#
-#         # Сохраняем полное аудио
-#         output_dir = "recordings"
-#         os.makedirs(output_dir, exist_ok=True)
-#         timestamp = int(time.time())
-#         wav_path = os.path.join(output_dir, f"full_recording_{timestamp}.wav")
-#
-#         # Нормализуем громкость если нужно
-#         max_val = np.max(np.abs(full_audio))
-#         if max_val > 1.0:
-#             full_audio = full_audio / max_val
-#
-#         # Сохраняем как WAV
-#         sf.write(wav_path, full_audio, SAMPLERATE)
-#
-#         # Пробуем конвертировать в MP3
-#         try:
-#             import subprocess
-#             mp3_path = wav_path.replace(".wav", ".mp3")
-#             subprocess.run([
-#                 "ffmpeg", "-y", "-i", wav_path,
-#                 "-acodec", "libmp3lame", "-q:a", "2",
-#                 mp3_path
-#             ], check=True, capture_output=True)
-#             saved_path = mp3_path
-#         except Exception as e:
-#             print(f"Не удалось конвертировать в MP3: {e}")
-#             saved_path = wav_path
-#
-#         result_text = f"✅ Аудио сохранено: {saved_path}\n🎵 Длительность: {duration_seconds:.1f} секунд"
-#
-#         # Очищаем буферы
-#         state["full_buffer"] = []
-#         state["partial_buffer"] = []
-#
-#         return result_text, state
-#
-#     except Exception as e:
-#         print(f"Ошибка в process_full_audio: {e}")
-#         import traceback
-#         traceback.print_exc()
-#
-#         # Отладочная информация
-#         print("\n=== Отладка состояния ===")
-#         print(f"Количество чанков: {len(state.get('full_buffer', []))}")
-#         for i, chunk in enumerate(state.get('full_buffer', [])):
-#             if chunk is not None:
-#                 print(f"Чанк {i}: тип={type(chunk)}, форма={chunk.shape if hasattr(chunk, 'shape') else 'N/A'}")
-#             else:
-#                 print(f"Чанк {i}: None")
-#
-#         return state, f"⚠️ Ошибка обработки: {str(e)}"
 
 
 def load_models():
     age_gender = get_age_gender_predictor('model_files/age_gender_model')
     adult_child = get_adult_child_detector('model_files/adult_child_detector')
     emotion_vad = get_emotion_vad_predictor('model_files/emotion_vad_model')
-    emotion_classifier = get_emotion_classifier("emo", "model_files/GigaAm_emo")
-    asr_model = get_asr_model('model_files/parakeet/parakeet-tdt-0.6b-v3.nemo')
+    emotion_classifier = get_emotion_classifier("emo")
+    asr_model = get_asr_model('model_files/parakeet')
     intent_classifier = get_intent_classifier('model_files/rubert_tiny_intent')
     semantic_emotion = get_semantic_emotion_classifier('model_files/semantic_emotion_classifier')
     # get_llm('model_files/qwen/Qwen2.5-1.5B-Instruct-Q5_K_M.gguf', "cpu")

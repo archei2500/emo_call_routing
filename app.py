@@ -2,15 +2,40 @@ import gradio as gr
 import os
 import pandas as pd
 import call
+from database import ContactCenterDB
 os.environ['XDG_RUNTIME_DIR'] = '/tmp/runtime-user'
 os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
+base_dir = os.path.dirname(os.path.abspath(__file__))
+os.environ['HF_HOME'] = os.path.join(base_dir, 'model_files', 'cache')
 
 
-initial_df = pd.DataFrame({
-    "Имя": ["Анна", "Борис", "Кирилл"],
-    "Возраст": [28, 34, 25],
-    "Город": ["Москва", "Санкт-Петербург", "Казань"]
-})
+def load_operators_dataframe():
+    with ContactCenterDB() as db:
+        operators = db.get_all_operators()
+        columns = [
+            'operator_id',
+            'full_name',
+            'gender',
+            'birth_date',
+            'start_date',
+            'patience_level',
+            'stress_resistance_level',
+            'empathy_level',
+            'shift_template_id',
+            'is_available',
+            'is_generalist'
+        ]
+        df = pd.DataFrame(operators, columns=columns)
+
+        # Читаемые статусы
+        df['status'] = df['is_available'].map({True: 'Доступен', False: 'Занят'})
+        df['generalist'] = df['is_generalist'].map({True: 'Да', False: 'Нет'})
+        df['gender_ru'] = df['gender'].map({'M': 'М', 'F': 'Ж'})
+
+        return df
+
+
+initial_df = load_operators_dataframe()
 
 
 def update_visibility():
@@ -37,6 +62,43 @@ def increment_call_id(state):
     state["age_gender_processing"] = False
     state["emotion_vad_processing"] = False
     return state
+
+
+def save_admin_changes(updated_df):
+    """
+    Принимает изменённый DataFrame от администратора
+    и сохраняет изменения в БД через ContactCenterDB.
+    Обновляются только поля, доступные в загруженной таблице.
+    """
+    try:
+        with ContactCenterDB() as db:
+            for _, row in updated_df.iterrows():
+                operator_id = int(row['operator_id'])
+                is_available = True if row['status'] == 'Доступен' else False
+                is_generalist = True if row['generalist'] == 'Да' else False
+                gender = 'M' if row['gender_ru'] == 'М' else 'F'
+                birth_date = pd.to_datetime(row['birth_date']).date() if isinstance(row['birth_date'], str) else row[
+                    'birth_date']
+                start_date = pd.to_datetime(row['start_date']).date() if isinstance(row['start_date'], str) else row[
+                    'start_date']
+                db.update_operator(
+                    operator_id=operator_id,
+                    full_name=row['full_name'],
+                    gender=gender,
+                    birth_date=birth_date,
+                    start_date=start_date,
+                    patience=int(row['patience_level']),
+                    stress=int(row['stress_resistance_level']),
+                    empathy=int(row['empathy_level']),
+                    shift_id=int(row['shift_template_id']),
+                    is_available=is_available,
+                    is_generalist=is_generalist
+                )
+            print("Изменения сохранены в БД")
+            return load_operators_dataframe()
+    except Exception as e:
+        print(f"Ошибка при сохранении: {e}")
+        return load_operators_dataframe()
 
 
 call.load_models()
@@ -77,7 +139,7 @@ with gr.Blocks() as demo:
         routing_result = gr.Textbox(label="Подобранный специалист", visible=False)
     with gr.Tab("Панель специалиста"):
         gr.Markdown("### <center>Описание проблемы клиента:")
-        problem_text = gr.Textbox(label="Цель звонка", visible=True)
+        problem_text = gr.Textbox(label="Цель звонка", visible=True, lines=5)
     with gr.Tab("Панель администратора"):
         admin_table = gr.Dataframe(
             value=initial_df,
@@ -163,6 +225,9 @@ with gr.Blocks() as demo:
         inputs=[audio_state, stream_state],
         outputs=[routing_result, audio_state, stream_state, problem_text]
     ).then(
+        fn=lambda: gr.update(visible=True),
+        outputs=routing_result
+    ).then(
         fn=lambda: gr.update(visible=False),
         outputs=confirm_age_btn
     ).then(
@@ -188,5 +253,12 @@ with gr.Blocks() as demo:
         outputs=call_btn  # для бесконечной работы
     )
 
+    # сохранение изменений в БД
+    admin_button.click(
+        fn=save_admin_changes,
+        inputs=admin_table,
+        outputs=admin_table
+    )
 
-demo.launch(share=True, max_file_size=None)
+
+demo.launch(share=False, max_file_size=None)
